@@ -270,6 +270,53 @@ func TestIOTracingBlockDevice(t *testing.T) {
 		})
 	}
 
+	t.Run("block_device_inode", func(t *testing.T) {
+		buffer := make([]byte, os.Getpagesize())
+		device := filepath.Join(dir, "block-device-node")
+		require.NoError(t, unix.Mknod(device, unix.S_IFBLK|0o600, int(stat.Dev)))
+		fd, err := unix.Open(device, unix.O_RDONLY|unix.O_CLOEXEC, 0)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = unix.Close(fd) })
+		size, err := unix.Seek(fd, 0, unix.SEEK_END)
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, size, int64(len(buffer)))
+		offset := (size/int64(len(buffer)) - 1) * int64(len(buffer))
+		// Buffered device IO uses a bdevfs inode whose superblock is not the
+		// request device. Evict only this page so the read reaches block IO.
+		require.NoError(t, unix.Fadvise(
+			fd,
+			offset,
+			int64(len(buffer)),
+			unix.FADV_DONTNEED,
+		))
+		coll := load(t, object, []uint32{fileKey.Dev})
+		n, err := unix.Pread(fd, buffer, offset)
+		require.NoError(t, err)
+		require.Equal(t, len(buffer), n)
+		require.Eventually(
+			t,
+			func() bool {
+				var key sourceKey
+				var record bpfFilesystemIO
+				entries := coll.Maps[bpfSourceMapName].Iterate()
+				for entries.Next(&key, &record) {
+					hasDeviceIdentity := key.Dev == fileKey.Dev && record.DevID == fileKey.Dev
+					hasProcessIdentity := record.TGID == uint32(os.Getpid())
+					hasCompletedRead := record.Latency.Count > 0 && record.BlockReadBytes >= uint64(len(buffer))
+					if hasDeviceIdentity && hasProcessIdentity && hasCompletedRead {
+						return true
+					}
+				}
+				require.NoError(t, entries.Err())
+				return false
+			},
+			3*time.Second,
+			10*time.Millisecond,
+			"buffered block-device IO must retain request device %d",
+			fileKey.Dev,
+		)
+	})
+
 	t.Run("file_excluded", func(t *testing.T) {
 		// This invalid device cannot accept real IO from the temporary file.
 		coll := load(t, object, []uint32{^uint32(0)})
