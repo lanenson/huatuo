@@ -193,40 +193,8 @@ func (s *Service) RawProfiles(
 			maxRawProfilePageSize,
 		)
 	}
-	currentJob, err := s.Get(ctx, principal, requestID)
-	if err != nil {
+	if _, err := s.requirePublishedJob(ctx, principal, requestID); err != nil {
 		return nil, err
-	}
-	switch currentJob.Status {
-	case job.StatusPending, job.StatusRunning, job.StatusStopping:
-		return nil, ErrResultNotReady
-	case job.StatusTerminal:
-		if currentJob.Terminal == nil {
-			return nil, ErrResultUnavailable
-		}
-		switch currentJob.Terminal.Outcome {
-		case job.OutcomeStopped, job.OutcomeFailed:
-			return nil, ErrResultUnavailable
-		case job.OutcomeCompleted, job.OutcomeUnknown:
-		default:
-			return nil, fmt.Errorf("unsupported Job outcome %q", currentJob.Terminal.Outcome)
-		}
-	default:
-		return nil, fmt.Errorf("unsupported Job status %q", currentJob.Status)
-	}
-	if s.profileStore == nil {
-		return nil, ErrResultUnavailable
-	}
-	published, err := s.isPublished(ctx, requestID)
-	if err != nil {
-		return nil, err
-	}
-	if !published {
-		return nil, fmt.Errorf(
-			"%w: profiling result %q has no publication marker",
-			ErrResultNotFound,
-			requestID,
-		)
 	}
 
 	documents, err := s.profileStore.ListByTracerID(ctx, requestID, limit+1, offset)
@@ -263,6 +231,48 @@ func (s *Service) RawProfiles(
 		Offset:  offset,
 		HasMore: hasMore,
 	}, nil
+}
+
+// requirePublishedJob keeps authorization and publication policy identical for
+// raw windows and the joined IO result.
+func (s *Service) requirePublishedJob(ctx context.Context, principal auth.Principal, requestID string) (*job.Job, error) {
+	currentJob, err := s.Get(ctx, principal, requestID)
+	if err != nil {
+		return nil, err
+	}
+	switch currentJob.Status {
+	case job.StatusPending, job.StatusRunning, job.StatusStopping:
+		return nil, ErrResultNotReady
+	case job.StatusTerminal:
+		if currentJob.Terminal == nil {
+			return nil, ErrResultUnavailable
+		}
+		switch currentJob.Terminal.Outcome {
+		case job.OutcomeStopped, job.OutcomeFailed:
+			return nil, ErrResultUnavailable
+		case job.OutcomeCompleted, job.OutcomeUnknown:
+		default:
+			return nil, fmt.Errorf("unsupported Job outcome %q", currentJob.Terminal.Outcome)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported Job status %q", currentJob.Status)
+	}
+	if s.profileStore == nil {
+		return nil, ErrResultUnavailable
+	}
+	published, err := s.isPublished(ctx, requestID)
+	if err != nil {
+		return nil, err
+	}
+	if !published {
+		return nil, fmt.Errorf(
+			"%w: profiling result %q has no publication marker",
+			ErrResultNotFound,
+			requestID,
+		)
+	}
+
+	return currentJob, nil
 }
 
 // Capabilities returns the versioned static Profiling capability table.
