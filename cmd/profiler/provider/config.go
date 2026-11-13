@@ -17,6 +17,7 @@ package provider
 import (
 	"time"
 
+	"github.com/ccfos/huatuo/internal/pod"
 	"github.com/ccfos/huatuo/pkg/profiling"
 )
 
@@ -36,6 +37,9 @@ type Config struct {
 	ToolDir                   string
 	LogBpfDebug               bool
 	Mode                      profiling.Mode
+	IOSampleInterval          time.Duration
+	IOSampleEvery             uint64
+	PodManager                pod.ManagerCtx
 	OffCPUPhase               profiling.OffCPUPhase
 	OffCPUMinDurationUS       uint64
 	OffCPUStatsEnabled        bool

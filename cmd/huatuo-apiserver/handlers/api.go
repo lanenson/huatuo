@@ -30,6 +30,7 @@ import (
 	"github.com/ccfos/huatuo/internal/httpserver/auth"
 	"github.com/ccfos/huatuo/internal/httpserver/response"
 	"github.com/ccfos/huatuo/internal/job"
+	"github.com/ccfos/huatuo/internal/profiling/fileio"
 	profilequery "github.com/ccfos/huatuo/internal/profiling/query"
 	"github.com/ccfos/huatuo/internal/timeutil"
 	"github.com/ccfos/huatuo/pkg/observation"
@@ -41,7 +42,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const maxRawProfileResponseBytes = 64 << 20
+const maxRawProfileResponseBytes = profilinghandler.MaxResultResponseBytes
 
 var errRawProfileResponseTooLarge = errors.New("profiling result response is too large")
 
@@ -119,6 +120,11 @@ func (h *APIHandler) CreateProfilingJob(
 	ctx context.Context,
 	request serverapi.CreateProfilingJobRequestObject,
 ) (serverapi.CreateProfilingJobResponseObject, error) {
+	if (request.Body.IOSampleIntervalUS != nil && *request.Body.IOSampleIntervalUS == 0) ||
+		(request.Body.IOSampleEvery != nil && *request.Body.IOSampleEvery == 0) {
+		return nil, response.ErrInvalidRequest.WithMessage("IO sampling values must be positive when provided")
+	}
+
 	principal := requestPrincipal(ctx)
 	createdJob, err := h.profiling.Create(ctx, principal, &profilinghandler.CreateInput{
 		Hostname:        request.Body.Hostname,
@@ -126,10 +132,12 @@ func (h *APIHandler) CreateProfilingJob(
 		Scope:           observation.Scope(request.Body.Scope),
 		ContainerID:     optionalValue(request.Body.ContainerID),
 		Spec: profilingdomain.Spec{
-			Type:            profilingdomain.Type(request.Body.Type),
-			Language:        profilingdomain.Language(request.Body.Language),
-			Mode:            profilingdomain.Mode(request.Body.Mode),
-			BinaryMatchPath: optionalValue(request.Body.BinaryMatchPath),
+			Type:               profilingdomain.Type(request.Body.Type),
+			Language:           profilingdomain.Language(request.Body.Language),
+			Mode:               profilingdomain.Mode(request.Body.Mode),
+			BinaryMatchPath:    optionalValue(request.Body.BinaryMatchPath),
+			IOSampleIntervalUS: optionalUint64Value(request.Body.IOSampleIntervalUS),
+			IOSampleEvery:      optionalUint64Value(request.Body.IOSampleEvery),
 		},
 	})
 	if err != nil {
@@ -291,6 +299,113 @@ func (h *APIHandler) GetProfilingJob(
 	), nil
 }
 
+// GetFileIOProfile returns one authorized filesystem IO result.
+func (h *APIHandler) GetFileIOProfile(
+	ctx context.Context,
+	request serverapi.GetFileIOProfileRequestObject,
+) (serverapi.GetFileIOProfileResponseObject, error) {
+	result, err := h.profiling.FileIO(ctx, requestPrincipal(ctx), request.RequestID)
+	if err != nil {
+		return nil, serverAPIError(err)
+	}
+
+	groups := make([]serverapi.FileIOGroup, len(result.Groups))
+	for i := range result.Groups {
+		groups[i] = fileIOGroup(&result.Groups[i])
+	}
+
+	return serverapi.GetFileIOProfile200JSONResponse(serverapi.FileIOProfileResponse{
+		Data: serverapi.FileIOResult{
+			Groups:          groups,
+			Diagnostics:     result.Diagnostics,
+			NumericComplete: result.NumericComplete,
+		},
+	}), nil
+}
+
+func fileIOStats(stats fileio.Stats) serverapi.FileIOStats {
+	return serverapi.FileIOStats{
+		Bytes:      stats.Bytes,
+		Count:      stats.Count,
+		DurationNS: stats.DurationNS,
+	}
+}
+
+func fileIOGroup(source *fileio.Group) serverapi.FileIOGroup {
+	result := serverapi.FileIOGroup{
+		Scope:          serverapi.FileIOGroupScope(source.Scope),
+		Direction:      serverapi.FileIOGroupDirection(source.Direction),
+		ContainerID:    source.ContainerID,
+		Root:           fileIONode(source.Root),
+		Unknown:        fileIOStats(source.Unknown),
+		DroppedSamples: source.DroppedSamples,
+	}
+	if source.Container != nil {
+		result.Container = &serverapi.FileIOContainer{
+			ID:            source.Container.ID,
+			Hostname:      source.Container.Hostname,
+			HostNamespace: source.Container.HostNamespace,
+			Type:          source.Container.Type,
+			QoS:           source.Container.QoS,
+		}
+	}
+	if len(source.Outcomes) != 0 {
+		result.Outcomes = make(map[string]serverapi.FileIOStats, len(source.Outcomes))
+		for outcome, stats := range source.Outcomes {
+			result.Outcomes[outcome] = fileIOStats(stats)
+		}
+	}
+	return result
+}
+
+func fileIONode(source *fileio.Node) serverapi.FileIONode {
+	result := serverapi.FileIONode{
+		Frame: serverapi.FileIOFrame{
+			Name: source.Frame.Name,
+			File: source.Frame.File,
+			Line: source.Frame.Line,
+		},
+		IsKernel: source.IsKernel,
+		Stats:    fileIOStats(source.Stats),
+		Self:     fileIOStats(source.Self),
+	}
+	if len(source.Labels) != 0 {
+		result.Labels = make([]serverapi.FileIOLabel, len(source.Labels))
+		for i, label := range source.Labels {
+			result.Labels[i] = serverapi.FileIOLabel{
+				Name:        label.Name,
+				Kind:        serverapi.FileIOLabelKind(label.Kind),
+				StringValue: label.StringValue,
+				NumberValue: label.NumberValue,
+				NumberUnit:  label.NumberUnit,
+			}
+		}
+	}
+	if len(source.Children) != 0 {
+		result.Children = make([]serverapi.FileIONode, len(source.Children))
+		for i, child := range source.Children {
+			result.Children[i] = fileIONode(child)
+		}
+	}
+	return result
+}
+
+// GetFileIOFlamegraph returns the authorized filesystem IO result as SVG.
+func (h *APIHandler) GetFileIOFlamegraph(
+	ctx context.Context,
+	request serverapi.GetFileIOFlamegraphRequestObject,
+) (serverapi.GetFileIOFlamegraphResponseObject, error) {
+	data, err := h.profiling.FileIOSVG(ctx, requestPrincipal(ctx), request.RequestID)
+	if err != nil {
+		return nil, serverAPIError(err)
+	}
+
+	return serverapi.GetFileIOFlamegraph200ImageSvgXMLResponse{
+		Body:          bytes.NewReader(data),
+		ContentLength: int64(len(data)),
+	}, nil
+}
+
 // StopProfilingJob records one asynchronous user stop intent.
 func (h *APIHandler) StopProfilingJob(
 	ctx context.Context,
@@ -442,21 +557,23 @@ func (h *APIHandler) StopTracingJob(
 func mapProfilingJob(source *job.Job) serverapi.ProfilingJob {
 	common := mapCommonJob(source)
 	return serverapi.ProfilingJob{
-		RequestID:       common.RequestID,
-		Hostname:        common.Hostname,
-		DurationSeconds: common.DurationSeconds,
-		Scope:           common.Scope,
-		ContainerID:     common.ContainerID,
-		Status:          common.Status,
-		Terminal:        common.Terminal,
-		CreatedAt:       common.CreatedAt,
-		UpdatedAt:       common.UpdatedAt,
-		StartedAt:       common.StartedAt,
-		EndedAt:         common.EndedAt,
-		Type:            serverapi.ProfilingType(source.Spec.Profiling.Type),
-		Language:        serverapi.ProfilingLanguage(source.Spec.Profiling.Language),
-		Mode:            serverapi.ProfilingMode(source.Spec.Profiling.Mode),
-		BinaryMatchPath: optionalString(source.Spec.Profiling.BinaryMatchPath),
+		RequestID:          common.RequestID,
+		Hostname:           common.Hostname,
+		DurationSeconds:    common.DurationSeconds,
+		Scope:              common.Scope,
+		ContainerID:        common.ContainerID,
+		Status:             common.Status,
+		Terminal:           common.Terminal,
+		CreatedAt:          common.CreatedAt,
+		UpdatedAt:          common.UpdatedAt,
+		StartedAt:          common.StartedAt,
+		EndedAt:            common.EndedAt,
+		Type:               serverapi.ProfilingType(source.Spec.Profiling.Type),
+		Language:           serverapi.ProfilingLanguage(source.Spec.Profiling.Language),
+		Mode:               serverapi.ProfilingMode(source.Spec.Profiling.Mode),
+		BinaryMatchPath:    optionalString(source.Spec.Profiling.BinaryMatchPath),
+		IOSampleIntervalUS: optionalUint64(source.Spec.Profiling.IOSampleIntervalUS),
+		IOSampleEvery:      optionalUint64(source.Spec.Profiling.IOSampleEvery),
 	}
 }
 
@@ -682,6 +799,11 @@ func serverAPIError(err error) error {
 			serverapi.ErrorCodeResultUnavailable,
 			"Job state does not provide a complete Profiling result",
 		)
+	case errors.Is(err, profilinghandler.ErrResultTooLarge):
+		return response.NewAPIError(
+			serverapi.ErrorCodeResultTooLarge,
+			"IO result is too large; retrieve raw profiles with pagination or collect a shorter task with narrower target filters",
+		)
 	case errors.Is(err, errRawProfileResponseTooLarge):
 		return response.NewAPIError(
 			serverapi.ErrorCodeResultTooLarge,
@@ -702,6 +824,20 @@ func optionalValue(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func optionalUint64Value(value *uint64) uint64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func optionalUint64(value uint64) *uint64 {
+	if value == 0 {
+		return nil
+	}
+	return &value
 }
 
 func optionalString(value string) *string {

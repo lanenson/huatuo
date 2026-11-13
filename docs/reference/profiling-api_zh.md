@@ -66,7 +66,7 @@ curl -sS \
 
 | 字段 | 说明 |
 | --- | --- |
-| `type` | 剖析类型：`cpu` 或 `memory` |
+| `type` | 剖析类型：`cpu`、`memory` 或 `io` |
 | `language` | 目标语言 |
 | `modes` | 此类型与语言组合允许的 `mode` |
 | `supports_binary_match` | 是否允许 `binary_match_path` |
@@ -83,13 +83,17 @@ curl -sS \
 | `java` | `object_alloc` | JVM 对象分配 |
 | `java` | `object_usage` | JVM 存活对象 |
 
+`io` 支持 `c`、`c++`、`go`，范围为 `host` 或 `container`。`mode=time` 按时间更新代表用户栈，
+`mode=count` 按成功读写次数更新；两者均统计已观测的 ext4/XFS 同步文件读写数值。
+字节数为逻辑读写量，耗时为文件函数经过时间；异步 IO、mmap 和独立 fsync 不在此类型的采集范围内。
+
 ## 创建任务
 
 `POST /v1/profiling` 的 JSON 参数如下：
 
 | 参数 | 是否必需 | 说明 |
 | --- | --- | --- |
-| `type` | 是 | 剖析类型：`cpu` 或 `memory` |
+| `type` | 是 | 剖析类型：`cpu`、`memory` 或 `io` |
 | `language` | 是 | 目标进程语言，必须与剖析类型匹配 |
 | `mode` | 是 | 能力表为对应类型和语言声明的模式 |
 | `duration_seconds` | 是 | 采集时长，单位为秒 |
@@ -97,6 +101,10 @@ curl -sS \
 | `scope` | 是 | 能力表允许的 `host` 或 `container` |
 | `container_id` | container 范围必需 | 目标容器 ID |
 | `binary_match_path` | 否 | 能力表允许时使用的可执行文件路径匹配条件 |
+| `io_sample_interval_us` | IO time 模式必需 | 代表栈更新间隔，正整数微秒；仅适用于 `type=io, mode=time` |
+| `io_sample_every` | IO count 模式必需 | 代表栈更新的成功读写次数间隔，正整数；仅适用于 `type=io, mode=count` |
+
+两个 IO 采样字段严格互斥，未使用的字段必须省略，不能显式传零；其他剖析类型不接受这些字段。
 
 即使请求内容相同，每次请求也会创建一个新 Job。超过每节点或进程级活动 Job
 配额时返回 HTTP 429。
@@ -205,17 +213,19 @@ curl -sS \
 | `hostname` | 目标节点主机名 |
 | `duration_seconds` | 请求的剖析时长，单位为秒 |
 | `scope` | `host` 或 `container` |
-| `type` | `cpu` 或 `memory` |
+| `type` | `cpu`、`memory` 或 `io` |
 | `language` | 目标进程语言 |
 | `mode` | 从能力表中选择的剖析模式 |
 | `binary_match_path` | 可执行文件匹配路径；未使用时不返回该字段 |
+| `io_sample_interval_us` | IO time 模式的代表栈更新间隔，单位微秒；未使用时省略 |
+| `io_sample_every` | IO count 模式的代表栈更新次数间隔；未使用时省略 |
 | `status` | 当前任务状态 |
 | `terminal` | 终态详情 `{outcome, reason, message}`；非终态不返回 |
 | `created_at` | 任务创建时间 |
 | `updated_at` | Job 状态最后更新时间 |
 | `started_at` | 实际开始执行时间；尚未观察到运行时不返回 |
 | `ended_at` | 进入终态的时间；运行期间不返回 |
-| `result_url` | 完整结果可用时，由单任务详情接口返回的 Dashboard 链接 |
+| `result_url` | 完整结果可用时，由单任务详情接口返回的结果引用；IO 指向本服务 SVG，CPU／内存可指向外部 Dashboard |
 
 任务状态如下：
 
@@ -265,6 +275,25 @@ curl -sS \
 一个窗口时，全部 3600 个窗口都会参与合并。超过 100000 个窗口时返回错误，提示缩小
 时间范围或过滤条件；查询或合并失败都不返回部分火焰图。原始 Profile 列表仍按 Job
 查询，其每页上限不限制完整火焰图的聚合数量。
+
+IO 任务提供专用结果接口，沿用相同的 Bearer token 和任务访问权限：
+
+| 接口 | 输出 |
+| --- | --- |
+| `GET /v1/profiling/{request_id}/io` | JSON：`data.groups` 为 IO 分组，`data.diagnostics` 为采集诊断；未报告数值丢失时，`data.numeric_complete` 为 true |
+| `GET /v1/profiling/{request_id}/io/flamegraph` | `image/svg+xml` 火焰图 |
+
+IO 任务不做周期输出，完成时保存一份包含字节数、次数、累计耗时和诊断计数的联合 pprof；读写方向与容器归属保存在样本标签中。中途停止不会发布部分结果。
+
+IO 任务的 `result_url` 是指向 SVG 接口的绝对路径引用（例如 `/v1/profiling/<request_id>/io/flamegraph`），不依赖 Grafana 配置。
+客户端使用当前 apiserver 的协议、主机和端口解析该引用，并在 GET 请求中携带当前用户的 `Authorization: Bearer <token>`；该链接不是公开分享链接。结果必须已经完整发布；
+未完成、未发布或无法提供完整结果时返回既有结果错误。结果超限返回 HTTP 413 和
+`result_too_large`，不返回截断的图或分组。
+
+分组包含 host/container/other 和读写方向；host 包含容器，不能与容器再次相加。
+容器分组的 `container` 在可用时提供既有名称、类型、QoS 和命名空间快照。
+`root.stats` 保存成功字节、次数和累计耗时，其他结果位于 `outcomes`。
+未知调用栈单独展示；截止时尚未完成的操作不计入本次结果。发生数值丢失时 SVG 标注 `INCOMPLETE`。
 
 ## 停止任务
 

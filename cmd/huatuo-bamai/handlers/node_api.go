@@ -102,16 +102,26 @@ func (h *NodeAPIHandler) startProfilingOperation(
 	if err != nil {
 		return nil, false, fmt.Errorf("decode profiling operation spec: %w", err)
 	}
+	if (spec.IOSampleIntervalUS != nil && *spec.IOSampleIntervalUS == 0) ||
+		(spec.IOSampleEvery != nil && *spec.IOSampleEvery == 0) {
+		return nil, false, fmt.Errorf(
+			"%w: IO sampling values must be positive when provided",
+			nodeprofiling.ErrInvalidRequest,
+		)
+	}
+
 	request := nodeprofiling.StartRequest{
 		RequestID:   body.RequestID,
 		Duration:    duration,
 		Scope:       observation.Scope(body.Scope),
 		ContainerID: optionalString(body.ContainerID),
 		Spec: profilingdomain.Spec{
-			Type:            profilingdomain.Type(spec.Type),
-			Language:        profilingdomain.Language(spec.Language),
-			Mode:            profilingdomain.Mode(spec.Mode),
-			BinaryMatchPath: optionalString(spec.BinaryMatchPath),
+			Type:               profilingdomain.Type(spec.Type),
+			Language:           profilingdomain.Language(spec.Language),
+			Mode:               profilingdomain.Mode(spec.Mode),
+			BinaryMatchPath:    optionalString(spec.BinaryMatchPath),
+			IOSampleIntervalUS: optionalUint64Value(spec.IOSampleIntervalUS),
+			IOSampleEvery:      optionalUint64Value(spec.IOSampleEvery),
 		},
 	}
 	snapshot, created, err := h.profiling.Start(ctx, &request)
@@ -253,6 +263,13 @@ func secondsDuration(seconds int64) (time.Duration, error) {
 func optionalString(value *string) string {
 	if value == nil {
 		return ""
+	}
+	return *value
+}
+
+func optionalUint64Value(value *uint64) uint64 {
+	if value == nil {
+		return 0
 	}
 	return *value
 }

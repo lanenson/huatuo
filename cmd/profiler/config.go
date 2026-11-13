@@ -24,6 +24,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/ccfos/huatuo/cmd/profiler/provider"
+	"github.com/ccfos/huatuo/internal/pod"
 	output "github.com/ccfos/huatuo/internal/profiling/formatter"
 	"github.com/ccfos/huatuo/pkg/profiling"
 )
@@ -67,9 +68,14 @@ func loadConfig(cliCtx *cli.Context) (*commandConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	if typ == profiling.TypeIO {
+		interval = duration
+	}
 	modeValue := cliCtx.String("cpu-mode")
 	if typ == profiling.TypeMemory {
 		modeValue = cliCtx.String("memory-mode")
+	} else if typ == profiling.TypeIO {
+		modeValue = cliCtx.String("io-stack-mode")
 	} else if modeValue == "" {
 		modeValue = string(profiling.ModeOnCPU)
 	}
@@ -95,13 +101,21 @@ func loadConfig(cliCtx *cli.Context) (*commandConfig, error) {
 			CPUIDs:               cpuIDs,
 			RequireHardwarePMU:   cliCtx.Bool("require-hardware-pmu"),
 
-			Type:                      typ,
-			ContainerID:               cliCtx.String("container-id"),
-			ExecPath:                  cliCtx.String("binary-match-path"),
-			ThreadGroup:               cliCtx.Bool("thread-group"),
-			ToolDir:                   cliCtx.String("tool-path"),
-			LogBpfDebug:               cliCtx.Bool("log-bpf-debug"),
-			Mode:                      mode,
+			Type:             typ,
+			ContainerID:      cliCtx.String("container-id"),
+			ExecPath:         cliCtx.String("binary-match-path"),
+			ThreadGroup:      typ == profiling.TypeIO || cliCtx.Bool("thread-group"),
+			ToolDir:          cliCtx.String("tool-path"),
+			LogBpfDebug:      cliCtx.Bool("log-bpf-debug"),
+			Mode:             mode,
+			IOSampleInterval: cliCtx.Duration("io-stack-interval"),
+			IOSampleEvery:    cliCtx.Uint64("io-stack-every"),
+			PodManager: pod.ManagerCtx{
+				PodReadOnlyPort:   uint32(cliCtx.Uint("kubelet-read-only-port")),
+				PodAuthorizedPort: uint32(cliCtx.Uint("kubelet-authorized-port")),
+				PodClientCertPath: cliCtx.String("kubelet-client-cert-path"),
+				DockerAPIVersion:  cliCtx.String("docker-api-version"),
+			},
 			OffCPUPhase:               offCPUPhase,
 			OffCPUMinDurationUS:       cliCtx.Uint64("offcpu-min-duration-us"),
 			OffCPUStatsEnabled:        cliCtx.Bool("offcpu-stats"),

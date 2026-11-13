@@ -33,6 +33,7 @@ const (
 )
 
 type containerController struct {
+	config            ManagerCtx
 	store             *containerStore
 	fetch             func(context.Context) (corev1.PodList, error)
 	resolve           func(string, *corev1.Container, *corev1.ContainerStatus, *corev1.Pod) (*containerRecord, error)
@@ -85,6 +86,7 @@ func InitManager(config *ManagerCtx) error {
 	}
 	dockerAPIVersion = config.DockerAPIVersion
 	controller := newContainerController(containerView)
+	controller.config = managerConfig
 	controller.initialize = func(ctx context.Context) error {
 		if err := kubeletPodListPortCacheUpdate(ctx, &managerConfig); err != nil {
 			return err
@@ -97,6 +99,17 @@ func InitManager(config *ManagerCtx) error {
 	containerManager = controller
 	controller.start()
 	return nil
+}
+
+// ManagerConfig returns the immutable startup options used by the shared
+// producer. Disabled discovery is represented by zero ports in child tools.
+func ManagerConfig() ManagerCtx {
+	containerManagerMu.Lock()
+	defer containerManagerMu.Unlock()
+	if containerManager == nil {
+		return ManagerCtx{}
+	}
+	return containerManager.config
 }
 
 // ReleaseManager cancels I/O, joins the producer, and then releases CSS probes.

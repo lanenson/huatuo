@@ -195,6 +195,20 @@ func (*unimplementedStrictServer) GetRawProfiles(
 	return nil, errNotImplemented
 }
 
+func (*unimplementedStrictServer) GetFileIOProfile(
+	context.Context,
+	GetFileIOProfileRequestObject,
+) (GetFileIOProfileResponseObject, error) {
+	return nil, errNotImplemented
+}
+
+func (*unimplementedStrictServer) GetFileIOFlamegraph(
+	context.Context,
+	GetFileIOFlamegraphRequestObject,
+) (GetFileIOFlamegraphResponseObject, error) {
+	return nil, errNotImplemented
+}
+
 func (*unimplementedStrictServer) StopProfilingJob(
 	context.Context,
 	StopProfilingJobRequestObject,

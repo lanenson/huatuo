@@ -122,6 +122,8 @@ func (e ProfilingLanguage) Valid() bool {
 
 // Defines values for ProfilingMode.
 const (
+	ProfilingModeIOCount       ProfilingMode = "count"
+	ProfilingModeIOTime        ProfilingMode = "time"
 	ProfilingModeObjectAlloc   ProfilingMode = "object_alloc"
 	ProfilingModeObjectUsage   ProfilingMode = "object_usage"
 	ProfilingModeOffCPU        ProfilingMode = "offcpu"
@@ -134,6 +136,10 @@ const (
 // Valid indicates whether the value is a known member of the ProfilingMode enum.
 func (e ProfilingMode) Valid() bool {
 	switch e {
+	case ProfilingModeIOCount:
+		return true
+	case ProfilingModeIOTime:
+		return true
 	case ProfilingModeObjectAlloc:
 		return true
 	case ProfilingModeObjectUsage:
@@ -156,6 +162,7 @@ func (e ProfilingMode) Valid() bool {
 // Defines values for ProfilingType.
 const (
 	ProfilingTypeCPU    ProfilingType = "cpu"
+	ProfilingTypeIO     ProfilingType = "io"
 	ProfilingTypeMemory ProfilingType = "memory"
 )
 
@@ -163,6 +170,8 @@ const (
 func (e ProfilingType) Valid() bool {
 	switch e {
 	case ProfilingTypeCPU:
+		return true
+	case ProfilingTypeIO:
 		return true
 	case ProfilingTypeMemory:
 		return true
@@ -268,10 +277,16 @@ type ProfilingMode string
 
 // ProfilingOperationSpec defines model for ProfilingOperationSpec.
 type ProfilingOperationSpec struct {
-	BinaryMatchPath *string           `json:"binary_match_path,omitempty"`
-	Language        ProfilingLanguage `json:"language"`
-	Mode            ProfilingMode     `json:"mode"`
-	Type            ProfilingType     `json:"type"`
+	BinaryMatchPath *string `json:"binary_match_path,omitempty"`
+
+	// IOSampleEvery Required only for native IO count mode; mutually exclusive with io_sample_interval_us.
+	IOSampleEvery *uint64 `json:"io_sample_every,omitempty"`
+
+	// IOSampleIntervalUS Required only for native IO time mode; mutually exclusive with io_sample_every.
+	IOSampleIntervalUS *uint64           `json:"io_sample_interval_us,omitempty"`
+	Language           ProfilingLanguage `json:"language"`
+	Mode               ProfilingMode     `json:"mode"`
+	Type               ProfilingType     `json:"type"`
 }
 
 // ProfilingType defines model for ProfilingType.

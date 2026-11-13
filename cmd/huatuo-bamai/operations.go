@@ -24,6 +24,7 @@ import (
 	"github.com/ccfos/huatuo/internal/nodeagent/operation"
 	nodeprofiling "github.com/ccfos/huatuo/internal/nodeagent/profiling"
 	nodetracing "github.com/ccfos/huatuo/internal/nodeagent/tracing"
+	"github.com/ccfos/huatuo/internal/pod"
 	"github.com/ccfos/huatuo/internal/toolstream"
 )
 
@@ -52,6 +53,16 @@ func startOperations(d *Daemon) (func(context.Context) error, error) {
 		}
 	}()
 
+	var podManager pod.ManagerCtx
+	if !d.opts.DisableKubelet {
+		podManager = pod.ManagerCtx{
+			PodReadOnlyPort:   cfg.Pod.KubeletReadOnlyPort,
+			PodAuthorizedPort: cfg.Pod.KubeletAuthorizedPort,
+			PodClientCertPath: cfg.Pod.KubeletClientCertPath,
+			DockerAPIVersion:  cfg.Pod.DockerAPIVersion,
+		}
+	}
+
 	profilingService, err := nodeprofiling.NewService(manager, &nodeprofiling.Config{
 		ProfilerPath:         filepath.Join(d.opts.ToolBinDir, "profiler"),
 		ToolstreamSocketPath: toolstream.DefaultSockPath,
@@ -60,6 +71,7 @@ func startOperations(d *Daemon) (func(context.Context) error, error) {
 			time.Second,
 		MaxConcurrentProcesses:  cfg.Profiling.MaxConcurrentProcesses,
 		CommandOutputLimitBytes: cfg.Profiling.CommandOutputLimitBytes,
+		PodManager:              podManager,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create profiling operation service: %w", err)

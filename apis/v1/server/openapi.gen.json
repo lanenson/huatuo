@@ -113,6 +113,16 @@
         },
         "description": "Request body is too large."
       },
+      "ResultTooLarge": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/apis_v1_components_ErrorResponse"
+            }
+          }
+        },
+        "description": "The published result exceeds the response size limit."
+      },
       "ServiceUnavailable": {
         "content": {
           "application/json": {
@@ -184,6 +194,21 @@
             "minLength": 1,
             "type": "string"
           },
+          "io_sample_every": {
+            "description": "Required only for native IO count mode; mutually exclusive with io_sample_interval_us.",
+            "minimum": 1,
+            "type": "integer",
+            "x-go-name": "IOSampleEvery",
+            "x-go-type": "uint64"
+          },
+          "io_sample_interval_us": {
+            "description": "Required only for native IO time mode; mutually exclusive with io_sample_every.",
+            "maximum": 9223372036854775,
+            "minimum": 1,
+            "type": "integer",
+            "x-go-name": "IOSampleIntervalUS",
+            "x-go-type": "uint64"
+          },
           "language": {
             "$ref": "#/components/schemas/ProfilingLanguage"
           },
@@ -238,6 +263,252 @@
         ],
         "type": "object"
       },
+      "FileIOContainer": {
+        "additionalProperties": false,
+        "properties": {
+          "host_namespace": {
+            "type": "string"
+          },
+          "hostname": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "qos": {
+            "type": "string",
+            "x-go-name": "QoS"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "hostname",
+          "host_namespace",
+          "type",
+          "qos"
+        ],
+        "type": "object"
+      },
+      "FileIOCounter": {
+        "minimum": 0,
+        "type": "integer",
+        "x-go-type": "uint64"
+      },
+      "FileIOFrame": {
+        "additionalProperties": false,
+        "properties": {
+          "file": {
+            "type": "string",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "line": {
+            "format": "int64",
+            "type": "integer",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "FileIOGroup": {
+        "additionalProperties": false,
+        "properties": {
+          "container": {
+            "$ref": "#/components/schemas/FileIOContainer"
+          },
+          "container_id": {
+            "type": "string",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "direction": {
+            "enum": [
+              "read",
+              "write"
+            ],
+            "type": "string"
+          },
+          "dropped_samples": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FileIOCounter"
+            },
+            "type": "object",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "outcomes": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FileIOStats"
+            },
+            "type": "object",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "root": {
+            "$ref": "#/components/schemas/FileIONode"
+          },
+          "scope": {
+            "enum": [
+              "host",
+              "container",
+              "other"
+            ],
+            "type": "string"
+          },
+          "unknown": {
+            "$ref": "#/components/schemas/FileIOStats"
+          }
+        },
+        "required": [
+          "scope",
+          "direction",
+          "root",
+          "unknown"
+        ],
+        "type": "object"
+      },
+      "FileIOLabel": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "description": "1 is a string label; 2 is a numeric label.",
+            "enum": [
+              1,
+              2
+            ],
+            "type": "integer"
+          },
+          "name": {
+            "type": "string"
+          },
+          "number_unit": {
+            "type": "string",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "number_value": {
+            "format": "int64",
+            "type": "integer",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "string_value": {
+            "type": "string",
+            "x-go-type-skip-optional-pointer": true
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "FileIONode": {
+        "additionalProperties": false,
+        "properties": {
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/FileIONode"
+            },
+            "type": "array",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "frame": {
+            "$ref": "#/components/schemas/FileIOFrame"
+          },
+          "is_kernel": {
+            "type": "boolean",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "labels": {
+            "items": {
+              "$ref": "#/components/schemas/FileIOLabel"
+            },
+            "type": "array",
+            "x-go-type-skip-optional-pointer": true
+          },
+          "self": {
+            "$ref": "#/components/schemas/FileIOStats"
+          },
+          "stats": {
+            "$ref": "#/components/schemas/FileIOStats"
+          }
+        },
+        "required": [
+          "frame",
+          "stats",
+          "self"
+        ],
+        "type": "object"
+      },
+      "FileIOProfileResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "data": {
+            "$ref": "#/components/schemas/FileIOResult"
+          }
+        },
+        "required": [
+          "data"
+        ],
+        "type": "object"
+      },
+      "FileIOResult": {
+        "additionalProperties": false,
+        "properties": {
+          "diagnostics": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FileIOCounter"
+            },
+            "type": "object"
+          },
+          "groups": {
+            "items": {
+              "$ref": "#/components/schemas/FileIOGroup"
+            },
+            "type": "array"
+          },
+          "numeric_complete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "groups",
+          "diagnostics",
+          "numeric_complete"
+        ],
+        "type": "object"
+      },
+      "FileIOStats": {
+        "additionalProperties": false,
+        "properties": {
+          "bytes": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "count": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "duration_ns": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer",
+            "x-go-name": "DurationNS"
+          }
+        },
+        "required": [
+          "bytes",
+          "count",
+          "duration_ns"
+        ],
+        "type": "object"
+      },
       "Job": {
         "additionalProperties": false,
         "properties": {
@@ -267,7 +538,8 @@
             "type": "string"
           },
           "result_url": {
-            "format": "uri",
+            "description": "Result reference. Resolve an IO absolute-path reference against the apiserver origin and send the caller's Bearer token; CPU/memory results can point to an external dashboard.",
+            "format": "uri-reference",
             "nullable": true,
             "type": "string"
           },
@@ -426,6 +698,19 @@
               "binary_match_path": {
                 "type": "string"
               },
+              "io_sample_every": {
+                "minimum": 1,
+                "type": "integer",
+                "x-go-name": "IOSampleEvery",
+                "x-go-type": "uint64"
+              },
+              "io_sample_interval_us": {
+                "maximum": 9223372036854775,
+                "minimum": 1,
+                "type": "integer",
+                "x-go-name": "IOSampleIntervalUS",
+                "x-go-type": "uint64"
+              },
               "language": {
                 "$ref": "#/components/schemas/ProfilingLanguage"
               },
@@ -518,7 +803,9 @@
           "object_usage",
           "virtual_alloc",
           "physical_alloc",
-          "physical_usage"
+          "physical_usage",
+          "time",
+          "count"
         ],
         "type": "string",
         "x-enum-varnames": [
@@ -528,18 +815,22 @@
           "ProfilingModeObjectUsage",
           "ProfilingModeVirtualAlloc",
           "ProfilingModePhysicalAlloc",
-          "ProfilingModePhysicalUsage"
+          "ProfilingModePhysicalUsage",
+          "ProfilingModeIOTime",
+          "ProfilingModeIOCount"
         ]
       },
       "ProfilingType": {
         "enum": [
           "cpu",
-          "memory"
+          "memory",
+          "io"
         ],
         "type": "string",
         "x-enum-varnames": [
           "ProfilingTypeCPU",
-          "ProfilingTypeMemory"
+          "ProfilingTypeMemory",
+          "ProfilingTypeIO"
         ]
       },
       "ProtobufPayload": {
@@ -1215,6 +1506,115 @@
           },
           "500": {
             "$ref": "#/components/responses/InternalError"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "profiling"
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RequestID"
+        }
+      ]
+    },
+    "/v1/profiling/{request_id}/io": {
+      "get": {
+        "operationId": "getFileIOProfile",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileIOProfileResponse"
+                }
+              }
+            },
+            "description": "Published filesystem IO groups and collection diagnostics."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/ResultTooLarge"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "tags": [
+          "profiling"
+        ]
+      },
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/RequestID"
+        }
+      ]
+    },
+    "/v1/profiling/{request_id}/io/flamegraph": {
+      "get": {
+        "operationId": "getFileIOFlamegraph",
+        "responses": {
+          "200": {
+            "content": {
+              "image/svg+xml": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Filesystem IO flamegraph as a standalone SVG."
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthenticated"
+          },
+          "403": {
+            "$ref": "#/components/responses/PermissionDenied"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/ResultTooLarge"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
           }
         },
         "security": [

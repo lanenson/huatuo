@@ -32,6 +32,7 @@ const (
 	FormatJSON        OutputFormat = "json"
 	FormatSpeedscope  OutputFormat = "speedscope"
 	FormatChromeTrace OutputFormat = "chrometrace"
+	FormatAutotracing OutputFormat = "autotracing"  // IO capture handed to its parent event
 	FormatRemoteStore OutputFormat = "remote-store" // upload to a remote storage backend
 )
 

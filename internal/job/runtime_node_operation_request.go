@@ -42,6 +42,12 @@ func buildStartOperationRequest(job *Job) (*nodeapi.StartOperationRequest, error
 		if spec.BinaryMatchPath != "" {
 			profilingSpec.BinaryMatchPath = &spec.BinaryMatchPath
 		}
+		if spec.IOSampleIntervalUS != 0 {
+			profilingSpec.IOSampleIntervalUS = &spec.IOSampleIntervalUS
+		}
+		if spec.IOSampleEvery != 0 {
+			profilingSpec.IOSampleEvery = &spec.IOSampleEvery
+		}
 		request.Kind = nodeapi.OperationKindProfiling
 		return request, request.Spec.FromProfilingOperationSpec(profilingSpec)
 	case KindTracing:

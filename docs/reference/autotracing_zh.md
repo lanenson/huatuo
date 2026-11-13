@@ -168,7 +168,9 @@ CPU 示例使用 `perf`。使用 `profiler` 时，事件保留触发指标，pro
 
 追踪器：`iotracing`。
 
-每 5 秒读取 `/proc/diskstats`。触发条件需连续两个采样周期成立：非 NVMe 设备检查利用率；NVMe 设备要求利用率和读、写吞吐率之一同时超阈值；各设备也会独立检查读、写平均等待时间。采集结果包含进程及文件 I/O 速率、I/O 调度等待栈。
+每 5 秒读取 `/proc/diskstats`。触发条件需连续两个采样周期成立：非 NVMe 设备检查利用率；NVMe 设备要求利用率和读、写吞吐率之一同时超阈值；各设备也会独立检查读、写平均等待时间。采集结果包含进程及文件 I/O 速率、I/O 调度等待栈。同一次触发还启动文件 IO 火焰图采集，时长同 `RunTracingToolTimeout`（默认 10s），完成后通过 Toolstream 附加到原报告的 `io_profile`。该字段包含 host／容器的读写统计摘要及静态 `flamegraph_svg`；失败时使用 `io_profile_error` 说明，原报告仍保存。
+
+代表栈采样通过 `AutoTracing.IOTracing.ProfileStackMode` 选择 `count` 或 `time`。默认 `count` 配合 `ProfileStackEvery=100`、`ProfileStackIntervalUS=0`；时间模式需设置 `ProfileStackEvery=0` 和正的 `ProfileStackIntervalUS`。两个采样参数互斥；数值始终逐次累计。
 
 直接运行 `iotracing` 时，可通过 `--enable-pprof`（默认关闭）在 `http://127.0.0.1:6000/debug/pprof/` 提供 profile；若地址已被占用，命令启动失败。这些 profile 仅反映 `iotracing` 进程自身的 Go runtime，不包含 `huatuo-bamai` 或执行磁盘 I/O 的业务进程。自动追踪不会开启此选项。
 

@@ -20,7 +20,7 @@ var appFlags = []cli.Flag{
 	&cli.StringFlag{
 		Name:    "type",
 		Aliases: []string{"t"},
-		Usage:   "Profiling type: cpu|memory",
+		Usage:   "Profiling type: cpu|memory|io",
 	},
 	&cli.StringFlag{
 		Name:    "language",
@@ -34,7 +34,7 @@ var appFlags = []cli.Flag{
 	&cli.StringFlag{
 		Name:    "pid",
 		Aliases: []string{"p"},
-		Usage:   "Target PID(s), comma-separated for Java and Python; native supports one PID",
+		Usage:   "Target PID(s); native accepts one PID, IO uses a process TGID and all threads; Java/Python accept lists",
 	},
 	&cli.StringFlag{
 		Name:  "cpuid",
@@ -44,6 +44,37 @@ var appFlags = []cli.Flag{
 		Name:  "cpu-mode",
 		Usage: "Native CPU profiling mode: oncpu|offcpu",
 		Value: "oncpu",
+	},
+	&cli.StringFlag{
+		Name:  "io-stack-mode",
+		Usage: "Native file IO representative-stack sampling: time|count; required for --type=io",
+	},
+	&cli.DurationFlag{
+		Name:  "io-stack-interval",
+		Usage: "Positive representative-stack interval for IO time mode (e.g. 1ms); excludes --io-stack-every",
+	},
+	&cli.Uint64Flag{
+		Name:  "io-stack-every",
+		Usage: "Positive operation count per representative stack for IO count mode; excludes --io-stack-interval",
+	},
+	&cli.UintFlag{
+		Name:  "kubelet-read-only-port",
+		Usage: "Kubelet read-only port for IO container metadata discovery; 0 disables this endpoint",
+		Value: 10255,
+	},
+	&cli.UintFlag{
+		Name:  "kubelet-authorized-port",
+		Usage: "Kubelet authorized port for IO container metadata discovery; 0 disables this endpoint",
+		Value: 10250,
+	},
+	&cli.StringFlag{
+		Name:  "kubelet-client-cert-path",
+		Usage: "Existing kubelet client certificate path for IO container metadata discovery",
+	},
+	&cli.StringFlag{
+		Name:  "docker-api-version",
+		Usage: "Docker API version used by IO container metadata discovery",
+		Value: "1.24",
 	},
 	&cli.StringFlag{
 		Name:  "offcpu-phase",
@@ -65,7 +96,7 @@ var appFlags = []cli.Flag{
 	},
 	&cli.BoolFlag{
 		Name:  "thread-group",
-		Usage: "Profile the target thread group; supported only by native profiling",
+		Usage: "Profile all threads in the target process; always enabled for IO, optional for native CPU/memory",
 	},
 	&cli.IntFlag{
 		Name:    "freq",

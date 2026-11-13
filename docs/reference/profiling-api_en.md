@@ -62,7 +62,7 @@ curl -sS \
 
 | Field | Description |
 | --- | --- |
-| `type` | Profiling type: `cpu` or `memory` |
+| `type` | Profiling type: `cpu`, `memory`, or `io` |
 | `language` | Target language |
 | `modes` | Allowed `mode` values for this type/language combination |
 | `supports_binary_match` | Whether `binary_match_path` is allowed |
@@ -78,13 +78,17 @@ CPU profiling for `c`, `c++`, and `go` supports `oncpu` and `offcpu`; `java` and
 | `java` | `object_alloc` | JVM object allocations |
 | `java` | `object_usage` | JVM live objects |
 
+`io` supports `c`, `c++`, and `go` with `host` or `container` scope. `mode=time` refreshes representative user stacks by time;
+`mode=count` refreshes them by successful read/write operation count. Both collect numerical counters for observed synchronous ext4/XFS file reads and writes.
+Bytes describe logical file IO and latency measures elapsed filesystem-function time. Asynchronous IO, mmap, and standalone fsync are not covered.
+
 ## Create a Task
 
 JSON parameters for `POST /v1/profiling`:
 
 | Parameter | Required | Description |
 | --- | --- | --- |
-| `type` | Yes | Profiling type: `cpu` or `memory` |
+| `type` | Yes | Profiling type: `cpu`, `memory`, or `io` |
 | `language` | Yes | Target process language; must match the profiling type |
 | `mode` | Yes | Mode declared by the capability table for the type and language |
 | `duration_seconds` | Yes | Collection duration in seconds |
@@ -92,6 +96,10 @@ JSON parameters for `POST /v1/profiling`:
 | `scope` | Yes | `host` or `container`, as allowed by the capability table |
 | `container_id` | For container scope | Target container ID |
 | `binary_match_path` | No | Executable-path match, when allowed by the capability table |
+| `io_sample_interval_us` | For IO time mode | Positive representative-stack refresh interval in microseconds; only for `type=io, mode=time` |
+| `io_sample_every` | For IO count mode | Positive successful read/write count between representative-stack refreshes; only for `type=io, mode=count` |
+
+The two IO sampling fields are mutually exclusive. Omit the unused field; explicitly setting it to zero is rejected. Other profiling types do not accept these fields.
 
 Every request creates a new task, even with identical content. Exceeding per-node or process-wide active task quotas returns HTTP 429.
 
@@ -197,17 +205,19 @@ Task information is in `data`:
 | `hostname` | Target node hostname |
 | `duration_seconds` | Requested profiling duration in seconds |
 | `scope` | `host` or `container` |
-| `type` | `cpu` or `memory` |
+| `type` | `cpu`, `memory`, or `io` |
 | `language` | Target process language |
 | `mode` | Profiling mode selected from the capability table |
 | `binary_match_path` | Executable match path; omitted when unused |
+| `io_sample_interval_us` | Representative-stack refresh interval in microseconds for IO time mode; omitted when unused |
+| `io_sample_every` | Representative-stack refresh count for IO count mode; omitted when unused |
 | `status` | Current task status |
 | `terminal` | Terminal details `{outcome, reason, message}`; omitted before termination |
 | `created_at` | Task creation time |
 | `updated_at` | Last task status update time |
 | `started_at` | Actual start time; omitted until execution is observed |
 | `ended_at` | Time of entering a terminal state; omitted while running |
-| `result_url` | Dashboard link returned by the single-task detail endpoint when complete results are available |
+| `result_url` | Result reference returned by the single-task detail endpoint; IO points to this service's SVG, while CPU/memory may point to an external dashboard |
 
 Task states:
 
@@ -238,6 +248,26 @@ curl -sS \
 Windows are in `data.items`; `data.limit`, `data.offset`, and `data.has_more` describe pagination. Each record includes `uploaded_timestamp`, `started_timestamp`, `profile_type`, and pprof-compatible `profile` data. A durably published empty result succeeds with an empty `items` array. Explicit `limit=0` is invalid; only omission uses the default. `limit` defaults to 20 and is capped at 100. Encoded Profile data above 64 MiB returns `413 result_too_large`; reduce `limit` and retry.
 
 Flame graphs read and merge batches of 100 windows, with a total limit of 100000 per request. At one window per second for an hour, all 3600 windows participate. Exceeding 100000 returns an error asking for a narrower time range or filters. Query or merge failures never return partial flame graphs. Raw Profile lists remain scoped to a task; their page limit does not cap aggregation for a complete flame graph.
+
+IO tasks expose dedicated result endpoints with the same Bearer authentication and task access checks:
+
+| Endpoint | Output |
+| --- | --- |
+| `GET /v1/profiling/{request_id}/io` | JSON: `data.groups` contains IO groups, `data.diagnostics` contains collection diagnostics, and `data.numeric_complete` is true when no numeric loss was reported |
+| `GET /v1/profiling/{request_id}/io/flamegraph` | An `image/svg+xml` flamegraph |
+
+An IO task has no periodic output. Completion saves one joint pprof containing bytes, operations, cumulative duration and diagnostic counts, with direction/container sample labels. Early cancellation publishes no partial result.
+
+An IO task's `result_url` is an absolute-path reference to the SVG endpoint (for example `/v1/profiling/<request_id>/io/flamegraph`) and does not require Grafana configuration.
+Resolve it against the current apiserver's scheme, host and port, and send the current user's `Authorization: Bearer <token>` header on the GET request. It is not a public sharing link.
+Results must be completely published; unfinished, unpublished, or incomplete results use the existing result errors.
+Oversized results return HTTP 413 with `result_too_large`, rather than truncated groups or SVG.
+
+Groups separate host/container/other and read/write. Host includes containers; do not add host and container totals.
+When available, a container group's `container` retains the existing hostname, type, QoS, and namespace snapshot.
+`root.stats` contains successful bytes, operation counts, and cumulative duration; other results appear in `outcomes`.
+Unknown stacks and unfinished operations are shown separately and do not automatically imply numeric loss.
+The SVG displays `INCOMPLETE` when numeric loss is reported.
 
 ## Stop a Task
 

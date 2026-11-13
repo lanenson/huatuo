@@ -344,7 +344,9 @@
           "object_usage",
           "virtual_alloc",
           "physical_alloc",
-          "physical_usage"
+          "physical_usage",
+          "time",
+          "count"
         ],
         "type": "string",
         "x-enum-varnames": [
@@ -354,7 +356,9 @@
           "ProfilingModeObjectUsage",
           "ProfilingModeVirtualAlloc",
           "ProfilingModePhysicalAlloc",
-          "ProfilingModePhysicalUsage"
+          "ProfilingModePhysicalUsage",
+          "ProfilingModeIOTime",
+          "ProfilingModeIOCount"
         ]
       },
       "ProfilingOperationSpec": {
@@ -363,6 +367,21 @@
           "binary_match_path": {
             "minLength": 1,
             "type": "string"
+          },
+          "io_sample_every": {
+            "description": "Required only for native IO count mode; mutually exclusive with io_sample_interval_us.",
+            "minimum": 1,
+            "type": "integer",
+            "x-go-name": "IOSampleEvery",
+            "x-go-type": "uint64"
+          },
+          "io_sample_interval_us": {
+            "description": "Required only for native IO time mode; mutually exclusive with io_sample_every.",
+            "maximum": 9223372036854775,
+            "minimum": 1,
+            "type": "integer",
+            "x-go-name": "IOSampleIntervalUS",
+            "x-go-type": "uint64"
           },
           "language": {
             "$ref": "#/components/schemas/ProfilingLanguage"
@@ -384,12 +403,14 @@
       "ProfilingType": {
         "enum": [
           "cpu",
-          "memory"
+          "memory",
+          "io"
         ],
         "type": "string",
         "x-enum-varnames": [
           "ProfilingTypeCPU",
-          "ProfilingTypeMemory"
+          "ProfilingTypeMemory",
+          "ProfilingTypeIO"
         ]
       },
       "StartOperationRequest": {

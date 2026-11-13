@@ -16,6 +16,7 @@ package remotestore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -52,7 +53,7 @@ func (f *formatter) Complete(ctx context.Context) error {
 }
 
 // NewFormatter connects remote output.
-func NewFormatter(cfg output.Config) (output.Formatter, error) {
+func newClient(cfg output.Config, version, service string) (*toolstream.Client, error) {
 	if err := output.ValidateDestination(cfg.Destination); err != nil {
 		return nil, err
 	}
@@ -69,17 +70,54 @@ func NewFormatter(cfg output.Config) (output.Formatter, error) {
 
 	client, err := toolstream.NewClient(&toolstream.ClientOptions{
 		SockPath:    path,
-		ServiceName: profiling.StoreServiceName,
+		ServiceName: service,
 		ToolName:    cfg.ToolName,
 		TaskID:      cfg.TaskID,
-		Version:     "3",
+		Version:     version,
 		SendTimeout: 30 * time.Second,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("connect remote profiling destination %q: %w", path, err)
 	}
 
-	return &formatter{client: client}, nil
+	return client, nil
 }
 
 func (f *formatter) Close() error { return f.client.Close() }
+
+// NewFormatter connects the established scalar window stream.
+func NewFormatter(cfg output.Config) (output.Formatter, error) {
+	client, err := newClient(cfg, "3", profiling.StoreServiceName)
+	if err != nil {
+		return nil, err
+	}
+	return &formatter{client: client}, nil
+}
+
+// WriteSnapshot publishes an already complete pprof result through the existing
+// legacy envelope. Values remain joint and require one storage write.
+func WriteSnapshot(ctx context.Context, cfg output.Config, data *types.ProfilingWindow) (returnErr error) {
+	client, err := newClient(cfg, "1", profiling.StoreServiceName)
+	if err != nil {
+		return err
+	}
+	defer func() { returnErr = errors.Join(returnErr, client.Close()) }()
+	return client.Send(ctx, data, toolstream.SendOptions{
+		End:    true,
+		Commit: true,
+	})
+}
+
+// HandOffSnapshot acknowledges receipt by the pending event, not an independent
+// durable profile. The parent iotracing result owns the eventual storage write.
+func HandOffSnapshot(ctx context.Context, cfg output.Config, data *types.ProfilingWindow) (returnErr error) {
+	client, err := newClient(cfg, "1", profiling.IOCaptureServiceName)
+	if err != nil {
+		return err
+	}
+	defer func() { returnErr = errors.Join(returnErr, client.Close()) }()
+	return client.Send(ctx, data, toolstream.SendOptions{
+		End:    true,
+		Commit: true,
+	})
+}

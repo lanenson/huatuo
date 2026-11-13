@@ -31,6 +31,8 @@ const (
 	ModePhysicalUsage Mode = "physical_usage"
 	ModeOnCPU         Mode = "oncpu"
 	ModeOffCPU        Mode = "offcpu"
+	ModeIOTime        Mode = "time"
+	ModeIOCount       Mode = "count"
 )
 
 // OffCPUPhase selects which part of a deschedule interval is accumulated.

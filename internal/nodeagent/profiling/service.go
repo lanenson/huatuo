@@ -23,6 +23,7 @@ import (
 
 	"github.com/ccfos/huatuo/internal/executil"
 	"github.com/ccfos/huatuo/internal/nodeagent/operation"
+	"github.com/ccfos/huatuo/internal/pod"
 	"github.com/ccfos/huatuo/pkg/observation"
 	profilingdomain "github.com/ccfos/huatuo/pkg/profiling"
 )
@@ -43,6 +44,7 @@ type Config struct {
 	AggregationInterval     time.Duration
 	MaxConcurrentProcesses  int
 	CommandOutputLimitBytes int
+	PodManager              pod.ManagerCtx
 }
 
 // StartRequest contains one validated profiling operation request.

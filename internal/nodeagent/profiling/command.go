@@ -30,17 +30,12 @@ func buildCommand(request *StartRequest, config *Config) (executil.Spec, error) 
 		aggregationInterval = request.Duration
 	}
 
-	args := []string{
-		"--type", string(request.Spec.Type),
-		"--language", string(request.Spec.Language),
-		"--duration", strconv.FormatInt(durationSeconds, 10),
-		"--aggr-interval", strconv.FormatInt(int64(aggregationInterval/time.Second), 10),
-		"--max-concurrent-procs", strconv.Itoa(config.MaxConcurrentProcesses),
-		"--output-format", "remote-store",
-		"--output-path", config.ToolstreamSocketPath,
-		"--task-id", request.RequestID,
-		"--tool-path", config.ToolDir,
+	args := []string{"--type", string(request.Spec.Type), "--language", string(request.Spec.Language), "--duration", strconv.FormatInt(durationSeconds, 10)}
+	if request.Spec.Type != profilingdomain.TypeIO {
+		args = append(args, "--aggr-interval", strconv.FormatInt(int64(aggregationInterval/time.Second), 10))
 	}
+	args = append(args, "--max-concurrent-procs", strconv.Itoa(config.MaxConcurrentProcesses),
+		"--output-format", "remote-store", "--output-path", config.ToolstreamSocketPath, "--task-id", request.RequestID, "--tool-path", config.ToolDir)
 	if request.Scope == observation.ScopeContainer {
 		args = append(args, "--container-id", request.ContainerID)
 	}
@@ -51,6 +46,24 @@ func buildCommand(request *StartRequest, config *Config) (executil.Spec, error) 
 		}
 	case profilingdomain.TypeMemory:
 		args = append(args, "--memory-mode", string(request.Spec.Mode))
+	case profilingdomain.TypeIO:
+		args = append(args, "--io-stack-mode", string(request.Spec.Mode))
+		if request.Spec.Mode == profilingdomain.ModeIOTime {
+			args = append(args, "--io-stack-interval", strconv.FormatUint(request.Spec.IOSampleIntervalUS, 10)+"us")
+		} else {
+			args = append(args, "--io-stack-every", strconv.FormatUint(request.Spec.IOSampleEvery, 10))
+		}
+		args = append(
+			args,
+			"--kubelet-read-only-port",
+			strconv.FormatUint(uint64(config.PodManager.PodReadOnlyPort), 10),
+			"--kubelet-authorized-port",
+			strconv.FormatUint(uint64(config.PodManager.PodAuthorizedPort), 10),
+			"--kubelet-client-cert-path",
+			config.PodManager.PodClientCertPath,
+			"--docker-api-version",
+			config.PodManager.DockerAPIVersion,
+		)
 	}
 	if request.Spec.BinaryMatchPath != "" {
 		args = append(args, "--binary-match-path", request.Spec.BinaryMatchPath)

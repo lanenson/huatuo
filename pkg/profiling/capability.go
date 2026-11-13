@@ -27,6 +27,7 @@ const (
 	TypeUnknown Type = ""
 	TypeCPU     Type = "cpu"
 	TypeMemory  Type = "memory"
+	TypeIO      Type = "io"
 	TypeLock    Type = "lock"
 )
 
@@ -84,6 +85,9 @@ var capabilities = []Capability{
 	newNativeCapability(LanguageC, TypeMemory),
 	newNativeCapability(LanguageCPP, TypeMemory),
 	newNativeCapability(LanguageGo, TypeMemory),
+	newNativeCapability(LanguageC, TypeIO),
+	newNativeCapability(LanguageCPP, TypeIO),
+	newNativeCapability(LanguageGo, TypeIO),
 	{
 		Type:            TypeMemory,
 		Language:        LanguageJava,
@@ -103,6 +107,8 @@ func newNativeCapability(language Language, typ Type) Capability {
 			ModePhysicalUsage,
 		}
 		scopes = []observation.Scope{observation.ScopeContainer}
+	} else if typ == TypeIO {
+		modes = []Mode{ModeIOTime, ModeIOCount}
 	}
 
 	return Capability{
@@ -125,7 +131,7 @@ func Capabilities() []Capability {
 
 func ParseType(value string) (Type, error) {
 	typ := Type(value)
-	if typ == TypeCPU || typ == TypeMemory {
+	if typ == TypeCPU || typ == TypeMemory || typ == TypeIO {
 		return typ, nil
 	}
 	return TypeUnknown, fmt.Errorf("unsupported profiling type %q", value)

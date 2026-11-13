@@ -406,8 +406,8 @@ components:
               name: json
     ProfilingType:
       type: string
-      enum: [cpu, memory]
-      x-enum-varnames: [ProfilingTypeCPU, ProfilingTypeMemory]
+      enum: [cpu, memory, io]
+      x-enum-varnames: [ProfilingTypeCPU, ProfilingTypeMemory, ProfilingTypeIO]
     ProfilingLanguage:
       type: string
       enum: [c, c++, go, java, python]
@@ -427,6 +427,8 @@ components:
         - virtual_alloc
         - physical_alloc
         - physical_usage
+        - time
+        - count
       x-enum-varnames:
         - ProfilingModeOnCPU
         - ProfilingModeOffCPU
@@ -435,6 +437,8 @@ components:
         - ProfilingModeVirtualAlloc
         - ProfilingModePhysicalAlloc
         - ProfilingModePhysicalUsage
+        - ProfilingModeIOTime
+        - ProfilingModeIOCount
     TracingType:
       type: string
       enum: [networking_drop, io_tracing, tcp_retransmit]
@@ -513,6 +517,19 @@ components:
         binary_match_path:
           type: string
           minLength: 1
+        io_sample_interval_us:
+          type: integer
+          minimum: 1
+          maximum: 9223372036854775
+          x-go-type: uint64
+          x-go-name: IOSampleIntervalUS
+          description: Required only for native IO time mode; mutually exclusive with io_sample_every.
+        io_sample_every:
+          type: integer
+          minimum: 1
+          x-go-type: uint64
+          x-go-name: IOSampleEvery
+          description: Required only for native IO count mode; mutually exclusive with io_sample_interval_us.
     TracingOperationSpec:
       type: object
       additionalProperties: false

@@ -15,6 +15,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+
+	"go.yaml.in/yaml/v3"
 
 	"github.com/getkin/kin-openapi/openapi3"
 )
@@ -91,11 +94,62 @@ func bundle(ctx context.Context, specPath string) ([]byte, error) {
 		return nil, fmt.Errorf("validate bundled %q: %w", specPath, err)
 	}
 
-	data, err := json.MarshalIndent(document, "", "  ")
+	data, err := json.Marshal(document)
 	if err != nil {
 		return nil, fmt.Errorf("encode bundled %q: %w", specPath, err)
 	}
+	// kin-openapi stores bounds as float64. Restore integer literals from the
+	// entry schema so bundling cannot widen a uint64 field's accepted range.
+	source, err := os.ReadFile(specPath)
+	if err != nil {
+		return nil, fmt.Errorf("read integer bounds from %q: %w", specPath, err)
+	}
+	var original map[string]any
+	if err := yaml.Unmarshal(source, &original); err != nil {
+		return nil, fmt.Errorf("decode integer bounds from %q: %w", specPath, err)
+	}
+	var bundled map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&bundled); err != nil {
+		return nil, fmt.Errorf("decode bundled %q: %w", specPath, err)
+	}
+	restoreIntegerBounds(bundled, original)
+	data, err = json.MarshalIndent(bundled, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("encode integer bounds in %q: %w", specPath, err)
+	}
 	return append(data, '\n'), nil
+}
+
+func restoreIntegerBounds(destination, source any) {
+	switch source := source.(type) {
+	case map[string]any:
+		target, ok := destination.(map[string]any)
+		if !ok {
+			return
+		}
+		for key, value := range source {
+			if _, exists := target[key]; !exists {
+				continue
+			}
+			if key == "minimum" || key == "maximum" || key == "multipleOf" {
+				switch value.(type) {
+				case int, int64, uint64:
+					target[key] = value
+				}
+			}
+			restoreIntegerBounds(target[key], value)
+		}
+	case []any:
+		target, ok := destination.([]any)
+		if !ok {
+			return
+		}
+		for i := 0; i < len(source) && i < len(target); i++ {
+			restoreIntegerBounds(target[i], source[i])
+		}
+	}
 }
 
 func validateOperationIDs(document *openapi3.T) error {

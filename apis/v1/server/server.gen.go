@@ -63,6 +63,12 @@ type ServerInterface interface {
 	// (GET /v1/profiling/{request_id})
 	GetProfilingJob(c *gin.Context, requestID RequestID)
 
+	// (GET /v1/profiling/{request_id}/io)
+	GetFileIOProfile(c *gin.Context, requestID RequestID)
+
+	// (GET /v1/profiling/{request_id}/io/flamegraph)
+	GetFileIOFlamegraph(c *gin.Context, requestID RequestID)
+
 	// (GET /v1/profiling/{request_id}/raw)
 	GetRawProfiles(c *gin.Context, requestID RequestID, params GetRawProfilesParams)
 
@@ -272,6 +278,60 @@ func (siw *ServerInterfaceWrapper) GetProfilingJob(c *gin.Context) {
 	}
 
 	siw.Handler.GetProfilingJob(c, requestID)
+}
+
+// GetFileIOProfile operation middleware
+func (siw *ServerInterfaceWrapper) GetFileIOProfile(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "request_id" -------------
+	var requestID RequestID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "request_id", c.Param("request_id"), &requestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter request_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(string(BearerAuthScopes), []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetFileIOProfile(c, requestID)
+}
+
+// GetFileIOFlamegraph operation middleware
+func (siw *ServerInterfaceWrapper) GetFileIOFlamegraph(c *gin.Context) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "request_id" -------------
+	var requestID RequestID
+
+	err = runtime.BindStyledParameterWithOptions("simple", "request_id", c.Param("request_id"), &requestID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter request_id: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(string(BearerAuthScopes), []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetFileIOFlamegraph(c, requestID)
 }
 
 // GetRawProfiles operation middleware
@@ -505,6 +565,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/v1/profiling/flamegraph/querier.v1.QuerierService/ProfileTypes", wrapper.GetProfileTypes)
 	router.POST(options.BaseURL+"/v1/profiling/flamegraph/querier.v1.QuerierService/SelectMergeStacktraces", wrapper.SelectMergeStacktraces)
 	router.GET(options.BaseURL+"/v1/profiling/:request_id", wrapper.GetProfilingJob)
+	router.GET(options.BaseURL+"/v1/profiling/:request_id/io", wrapper.GetFileIOProfile)
+	router.GET(options.BaseURL+"/v1/profiling/:request_id/io/flamegraph", wrapper.GetFileIOFlamegraph)
 	router.GET(options.BaseURL+"/v1/profiling/:request_id/raw", wrapper.GetRawProfiles)
 	router.POST(options.BaseURL+"/v1/profiling/:request_id/stop", wrapper.StopProfilingJob)
 	router.GET(options.BaseURL+"/v1/tracing", wrapper.ListTracingJobs)
@@ -531,6 +593,8 @@ type ProtobufResponseApplicationProtoResponse struct {
 }
 
 type RequestTooLargeJSONResponse externalRef0.ErrorResponse
+
+type ResultTooLargeJSONResponse externalRef0.ErrorResponse
 
 type ServiceUnavailableJSONResponse externalRef0.ErrorResponse
 
@@ -1406,6 +1470,282 @@ func (response GetProfilingJob500JSONResponse) VisitGetProfilingJobResponse(w ht
 	return err
 }
 
+type GetFileIOProfileRequestObject struct {
+	RequestID RequestID `json:"request_id"`
+}
+
+type GetFileIOProfileResponseObject interface {
+	VisitGetFileIOProfileResponse(w http.ResponseWriter) error
+}
+
+type GetFileIOProfile200JSONResponse FileIOProfileResponse
+
+func (response GetFileIOProfile200JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOProfile400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetFileIOProfile400JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOProfile401JSONResponse struct{ UnauthenticatedJSONResponse }
+
+func (response GetFileIOProfile401JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOProfile403JSONResponse struct{ PermissionDeniedJSONResponse }
+
+func (response GetFileIOProfile403JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOProfile404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetFileIOProfile404JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOProfile409JSONResponse struct{ ConflictJSONResponse }
+
+func (response GetFileIOProfile409JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOProfile413JSONResponse struct{ ResultTooLargeJSONResponse }
+
+func (response GetFileIOProfile413JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOProfile500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response GetFileIOProfile500JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOProfile503JSONResponse struct{ ServiceUnavailableJSONResponse }
+
+func (response GetFileIOProfile503JSONResponse) VisitGetFileIOProfileResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOFlamegraphRequestObject struct {
+	RequestID RequestID `json:"request_id"`
+}
+
+type GetFileIOFlamegraphResponseObject interface {
+	VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error
+}
+
+type GetFileIOFlamegraph200ImageSvgXMLResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response GetFileIOFlamegraph200ImageSvgXMLResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "image/svg+xml")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	_, err := io.Copy(w, response.Body)
+	return err
+}
+
+type GetFileIOFlamegraph400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response GetFileIOFlamegraph400JSONResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOFlamegraph401JSONResponse struct{ UnauthenticatedJSONResponse }
+
+func (response GetFileIOFlamegraph401JSONResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("WWW-Authenticate", fmt.Sprint(response.Headers.WWWAuthenticate))
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOFlamegraph403JSONResponse struct{ PermissionDeniedJSONResponse }
+
+func (response GetFileIOFlamegraph403JSONResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(403)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOFlamegraph404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetFileIOFlamegraph404JSONResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOFlamegraph409JSONResponse struct{ ConflictJSONResponse }
+
+func (response GetFileIOFlamegraph409JSONResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOFlamegraph413JSONResponse struct{ ResultTooLargeJSONResponse }
+
+func (response GetFileIOFlamegraph413JSONResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(413)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOFlamegraph500JSONResponse struct{ InternalErrorJSONResponse }
+
+func (response GetFileIOFlamegraph500JSONResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(500)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetFileIOFlamegraph503JSONResponse struct{ ServiceUnavailableJSONResponse }
+
+func (response GetFileIOFlamegraph503JSONResponse) VisitGetFileIOFlamegraphResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetRawProfilesRequestObject struct {
 	RequestID RequestID `json:"request_id"`
 	Params    GetRawProfilesParams
@@ -2128,6 +2468,12 @@ type StrictServerInterface interface {
 	// (GET /v1/profiling/{request_id})
 	GetProfilingJob(ctx context.Context, request GetProfilingJobRequestObject) (GetProfilingJobResponseObject, error)
 
+	// (GET /v1/profiling/{request_id}/io)
+	GetFileIOProfile(ctx context.Context, request GetFileIOProfileRequestObject) (GetFileIOProfileResponseObject, error)
+
+	// (GET /v1/profiling/{request_id}/io/flamegraph)
+	GetFileIOFlamegraph(ctx context.Context, request GetFileIOFlamegraphRequestObject) (GetFileIOFlamegraphResponseObject, error)
+
 	// (GET /v1/profiling/{request_id}/raw)
 	GetRawProfiles(ctx context.Context, request GetRawProfilesRequestObject) (GetRawProfilesResponseObject, error)
 
@@ -2459,6 +2805,58 @@ func (sh *strictHandler) GetProfilingJob(ctx *gin.Context, requestID RequestID) 
 		sh.options.HandlerErrorFunc(ctx, err)
 	} else if validResponse, ok := response.(GetProfilingJobResponseObject); ok {
 		if err := validResponse.VisitGetProfilingJobResponse(ctx.Writer); err != nil {
+			sh.options.ResponseErrorHandlerFunc(ctx, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(ctx, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetFileIOProfile operation middleware
+func (sh *strictHandler) GetFileIOProfile(ctx *gin.Context, requestID RequestID) {
+	var request GetFileIOProfileRequestObject
+
+	request.RequestID = requestID
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.GetFileIOProfile(ctx, request.(GetFileIOProfileRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetFileIOProfile")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		sh.options.HandlerErrorFunc(ctx, err)
+	} else if validResponse, ok := response.(GetFileIOProfileResponseObject); ok {
+		if err := validResponse.VisitGetFileIOProfileResponse(ctx.Writer); err != nil {
+			sh.options.ResponseErrorHandlerFunc(ctx, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(ctx, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetFileIOFlamegraph operation middleware
+func (sh *strictHandler) GetFileIOFlamegraph(ctx *gin.Context, requestID RequestID) {
+	var request GetFileIOFlamegraphRequestObject
+
+	request.RequestID = requestID
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.GetFileIOFlamegraph(ctx, request.(GetFileIOFlamegraphRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetFileIOFlamegraph")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		sh.options.HandlerErrorFunc(ctx, err)
+	} else if validResponse, ok := response.(GetFileIOFlamegraphResponseObject); ok {
+		if err := validResponse.VisitGetFileIOFlamegraphResponse(ctx.Writer); err != nil {
 			sh.options.ResponseErrorHandlerFunc(ctx, err)
 		}
 	} else if response != nil {

@@ -29,6 +29,63 @@ const (
 	BearerAuthScopes bearerAuthContextKey = "BearerAuth.Scopes"
 )
 
+// Defines values for FileIOGroupDirection.
+const (
+	Read  FileIOGroupDirection = "read"
+	Write FileIOGroupDirection = "write"
+)
+
+// Valid indicates whether the value is a known member of the FileIOGroupDirection enum.
+func (e FileIOGroupDirection) Valid() bool {
+	switch e {
+	case Read:
+		return true
+	case Write:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FileIOGroupScope.
+const (
+	Container FileIOGroupScope = "container"
+	Host      FileIOGroupScope = "host"
+	Other     FileIOGroupScope = "other"
+)
+
+// Valid indicates whether the value is a known member of the FileIOGroupScope enum.
+func (e FileIOGroupScope) Valid() bool {
+	switch e {
+	case Container:
+		return true
+	case Host:
+		return true
+	case Other:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for FileIOLabelKind.
+const (
+	N1 FileIOLabelKind = 1
+	N2 FileIOLabelKind = 2
+)
+
+// Valid indicates whether the value is a known member of the FileIOLabelKind enum.
+func (e FileIOLabelKind) Valid() bool {
+	switch e {
+	case N1:
+		return true
+	case N2:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for JobOutcome.
 const (
 	JobOutcomeCompleted JobOutcome = "completed"
@@ -106,6 +163,8 @@ func (e ProfilingLanguage) Valid() bool {
 
 // Defines values for ProfilingMode.
 const (
+	ProfilingModeIOCount       ProfilingMode = "count"
+	ProfilingModeIOTime        ProfilingMode = "time"
 	ProfilingModeObjectAlloc   ProfilingMode = "object_alloc"
 	ProfilingModeObjectUsage   ProfilingMode = "object_usage"
 	ProfilingModeOffCPU        ProfilingMode = "offcpu"
@@ -118,6 +177,10 @@ const (
 // Valid indicates whether the value is a known member of the ProfilingMode enum.
 func (e ProfilingMode) Valid() bool {
 	switch e {
+	case ProfilingModeIOCount:
+		return true
+	case ProfilingModeIOTime:
+		return true
 	case ProfilingModeObjectAlloc:
 		return true
 	case ProfilingModeObjectUsage:
@@ -140,6 +203,7 @@ func (e ProfilingMode) Valid() bool {
 // Defines values for ProfilingType.
 const (
 	ProfilingTypeCPU    ProfilingType = "cpu"
+	ProfilingTypeIO     ProfilingType = "io"
 	ProfilingTypeMemory ProfilingType = "memory"
 )
 
@@ -147,6 +211,8 @@ const (
 func (e ProfilingType) Valid() bool {
 	switch e {
 	case ProfilingTypeCPU:
+		return true
+	case ProfilingTypeIO:
 		return true
 	case ProfilingTypeMemory:
 		return true
@@ -178,12 +244,18 @@ func (e TracingType) Valid() bool {
 
 // CreateProfilingJobRequest defines model for CreateProfilingJobRequest.
 type CreateProfilingJobRequest struct {
-	BinaryMatchPath *string           `json:"binary_match_path,omitempty"`
-	ContainerID     *string           `json:"container_id,omitempty"`
-	DurationSeconds int64             `json:"duration_seconds"`
-	Hostname        string            `json:"hostname"`
-	Language        ProfilingLanguage `json:"language"`
-	Mode            ProfilingMode     `json:"mode"`
+	BinaryMatchPath *string `json:"binary_match_path,omitempty"`
+	ContainerID     *string `json:"container_id,omitempty"`
+	DurationSeconds int64   `json:"duration_seconds"`
+	Hostname        string  `json:"hostname"`
+
+	// IOSampleEvery Required only for native IO count mode; mutually exclusive with io_sample_interval_us.
+	IOSampleEvery *uint64 `json:"io_sample_every,omitempty"`
+
+	// IOSampleIntervalUS Required only for native IO time mode; mutually exclusive with io_sample_every.
+	IOSampleIntervalUS *uint64           `json:"io_sample_interval_us,omitempty"`
+	Language           ProfilingLanguage `json:"language"`
+	Mode               ProfilingMode     `json:"mode"`
 
 	// Scope Boundary observed by an on-demand operation.
 	Scope externalRef0.ObservationScope `json:"scope"`
@@ -201,6 +273,85 @@ type CreateTracingJobRequest struct {
 	Type  TracingType                   `json:"type"`
 }
 
+// FileIOContainer defines model for FileIOContainer.
+type FileIOContainer struct {
+	HostNamespace string `json:"host_namespace"`
+	Hostname      string `json:"hostname"`
+	ID            string `json:"id"`
+	QoS           string `json:"qos"`
+	Type          string `json:"type"`
+}
+
+// FileIOCounter defines model for FileIOCounter.
+type FileIOCounter = uint64
+
+// FileIOFrame defines model for FileIOFrame.
+type FileIOFrame struct {
+	File string `json:"file,omitempty"`
+	Line int64  `json:"line,omitempty"`
+	Name string `json:"name"`
+}
+
+// FileIOGroup defines model for FileIOGroup.
+type FileIOGroup struct {
+	Container      *FileIOContainer         `json:"container,omitempty"`
+	ContainerID    string                   `json:"container_id,omitempty"`
+	Direction      FileIOGroupDirection     `json:"direction"`
+	DroppedSamples map[string]FileIOCounter `json:"dropped_samples,omitempty"`
+	Outcomes       map[string]FileIOStats   `json:"outcomes,omitempty"`
+	Root           FileIONode               `json:"root"`
+	Scope          FileIOGroupScope         `json:"scope"`
+	Unknown        FileIOStats              `json:"unknown"`
+}
+
+// FileIOGroupDirection defines model for FileIOGroup.Direction.
+type FileIOGroupDirection string
+
+// FileIOGroupScope defines model for FileIOGroup.Scope.
+type FileIOGroupScope string
+
+// FileIOLabel defines model for FileIOLabel.
+type FileIOLabel struct {
+	// Kind 1 is a string label; 2 is a numeric label.
+	Kind        FileIOLabelKind `json:"kind"`
+	Name        string          `json:"name"`
+	NumberUnit  string          `json:"number_unit,omitempty"`
+	NumberValue int64           `json:"number_value,omitempty"`
+	StringValue string          `json:"string_value,omitempty"`
+}
+
+// FileIOLabelKind 1 is a string label; 2 is a numeric label.
+type FileIOLabelKind int
+
+// FileIONode defines model for FileIONode.
+type FileIONode struct {
+	Children []FileIONode  `json:"children,omitempty"`
+	Frame    FileIOFrame   `json:"frame"`
+	IsKernel bool          `json:"is_kernel,omitempty"`
+	Labels   []FileIOLabel `json:"labels,omitempty"`
+	Self     FileIOStats   `json:"self"`
+	Stats    FileIOStats   `json:"stats"`
+}
+
+// FileIOProfileResponse defines model for FileIOProfileResponse.
+type FileIOProfileResponse struct {
+	Data FileIOResult `json:"data"`
+}
+
+// FileIOResult defines model for FileIOResult.
+type FileIOResult struct {
+	Diagnostics     map[string]FileIOCounter `json:"diagnostics"`
+	Groups          []FileIOGroup            `json:"groups"`
+	NumericComplete bool                     `json:"numeric_complete"`
+}
+
+// FileIOStats defines model for FileIOStats.
+type FileIOStats struct {
+	Bytes      int64 `json:"bytes"`
+	Count      int64 `json:"count"`
+	DurationNS int64 `json:"duration_ns"`
+}
+
 // Job defines model for Job.
 type Job struct {
 	ContainerID     *string    `json:"container_id,omitempty"`
@@ -209,7 +360,9 @@ type Job struct {
 	EndedAt         *time.Time `json:"ended_at,omitempty"`
 	Hostname        string     `json:"hostname"`
 	RequestID       string     `json:"request_id"`
-	ResultURL       *string    `json:"result_url,omitempty"`
+
+	// ResultURL Result reference. Resolve an IO absolute-path reference against the apiserver origin and send the caller's Bearer token; CPU/memory results can point to an external dashboard.
+	ResultURL *string `json:"result_url,omitempty"`
 
 	// Scope Boundary observed by an on-demand operation.
 	Scope     externalRef0.ObservationScope `json:"scope"`
@@ -253,16 +406,20 @@ type ProfilingCapability struct {
 
 // ProfilingJob defines model for ProfilingJob.
 type ProfilingJob struct {
-	BinaryMatchPath *string           `json:"binary_match_path,omitempty"`
-	ContainerID     *string           `json:"container_id,omitempty"`
-	CreatedAt       time.Time         `json:"created_at"`
-	DurationSeconds int64             `json:"duration_seconds"`
-	EndedAt         *time.Time        `json:"ended_at,omitempty"`
-	Hostname        string            `json:"hostname"`
-	Language        ProfilingLanguage `json:"language"`
-	Mode            ProfilingMode     `json:"mode"`
-	RequestID       string            `json:"request_id"`
-	ResultURL       *string           `json:"result_url,omitempty"`
+	BinaryMatchPath    *string           `json:"binary_match_path,omitempty"`
+	ContainerID        *string           `json:"container_id,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+	DurationSeconds    int64             `json:"duration_seconds"`
+	EndedAt            *time.Time        `json:"ended_at,omitempty"`
+	Hostname           string            `json:"hostname"`
+	IOSampleEvery      *uint64           `json:"io_sample_every,omitempty"`
+	IOSampleIntervalUS *uint64           `json:"io_sample_interval_us,omitempty"`
+	Language           ProfilingLanguage `json:"language"`
+	Mode               ProfilingMode     `json:"mode"`
+	RequestID          string            `json:"request_id"`
+
+	// ResultURL Result reference. Resolve an IO absolute-path reference against the apiserver origin and send the caller's Bearer token; CPU/memory results can point to an external dashboard.
+	ResultURL *string `json:"result_url,omitempty"`
 
 	// Scope Boundary observed by an on-demand operation.
 	Scope     externalRef0.ObservationScope `json:"scope"`
@@ -355,7 +512,9 @@ type TracingJob struct {
 	EndedAt         *time.Time `json:"ended_at,omitempty"`
 	Hostname        string     `json:"hostname"`
 	RequestID       string     `json:"request_id"`
-	ResultURL       *string    `json:"result_url,omitempty"`
+
+	// ResultURL Result reference. Resolve an IO absolute-path reference against the apiserver origin and send the caller's Bearer token; CPU/memory results can point to an external dashboard.
+	ResultURL *string `json:"result_url,omitempty"`
 
 	// Scope Boundary observed by an on-demand operation.
 	Scope     externalRef0.ObservationScope `json:"scope"`
@@ -413,6 +572,9 @@ type PermissionDenied = externalRef0.ErrorResponse
 
 // RequestTooLarge defines model for RequestTooLarge.
 type RequestTooLarge = externalRef0.ErrorResponse
+
+// ResultTooLarge defines model for ResultTooLarge.
+type ResultTooLarge = externalRef0.ErrorResponse
 
 // ServiceUnavailable defines model for ServiceUnavailable.
 type ServiceUnavailable = externalRef0.ErrorResponse

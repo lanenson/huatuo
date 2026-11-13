@@ -192,6 +192,69 @@ paths:
           $ref: '#/components/responses/InternalError'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /v1/profiling/{request_id}/io:
+    parameters:
+      - $ref: '#/components/parameters/RequestID'
+    get:
+      operationId: getFileIOProfile
+      tags: [profiling]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Published filesystem IO groups and collection diagnostics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FileIOProfileResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/ResultTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /v1/profiling/{request_id}/io/flamegraph:
+    parameters:
+      - $ref: '#/components/parameters/RequestID'
+    get:
+      operationId: getFileIOFlamegraph
+      tags: [profiling]
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Filesystem IO flamegraph as a standalone SVG.
+          content:
+            image/svg+xml:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/PermissionDenied'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/ResultTooLarge'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /v1/profiling/flamegraph/querier.v1.QuerierService/SelectMergeStacktraces:
     post:
       operationId: selectMergeStacktraces
@@ -560,6 +623,12 @@ components:
         application/json:
           schema:
             $ref: '../components.yaml#/components/schemas/ErrorResponse'
+    ResultTooLarge:
+      description: The published result exceeds the response size limit.
+      content:
+        application/json:
+          schema:
+            $ref: '../components.yaml#/components/schemas/ErrorResponse'
     UnsupportedMediaType:
       description: Request content type is unsupported.
       content:
@@ -591,13 +660,162 @@ components:
           schema:
             $ref: '#/components/schemas/ProtobufPayload'
   schemas:
+    FileIOProfileResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/FileIOResult'
+    FileIOResult:
+      type: object
+      additionalProperties: false
+      required: [groups, diagnostics, numeric_complete]
+      properties:
+        groups:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileIOGroup'
+        diagnostics:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/FileIOCounter'
+        numeric_complete:
+          type: boolean
+    FileIOCounter:
+      type: integer
+      minimum: 0
+      x-go-type: uint64
+    FileIOStats:
+      type: object
+      additionalProperties: false
+      required: [bytes, count, duration_ns]
+      properties:
+        bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+        duration_ns:
+          type: integer
+          format: int64
+          minimum: 0
+          x-go-name: DurationNS
+    FileIOGroup:
+      type: object
+      additionalProperties: false
+      required: [scope, direction, root, unknown]
+      properties:
+        scope:
+          type: string
+          enum: [host, container, other]
+        direction:
+          type: string
+          enum: [read, write]
+        container_id:
+          type: string
+          x-go-type-skip-optional-pointer: true
+        container:
+          $ref: '#/components/schemas/FileIOContainer'
+        root:
+          $ref: '#/components/schemas/FileIONode'
+        unknown:
+          $ref: '#/components/schemas/FileIOStats'
+        dropped_samples:
+          type: object
+          x-go-type-skip-optional-pointer: true
+          additionalProperties:
+            $ref: '#/components/schemas/FileIOCounter'
+        outcomes:
+          type: object
+          x-go-type-skip-optional-pointer: true
+          additionalProperties:
+            $ref: '#/components/schemas/FileIOStats'
+    FileIONode:
+      type: object
+      additionalProperties: false
+      required: [frame, stats, self]
+      properties:
+        frame:
+          $ref: '#/components/schemas/FileIOFrame'
+        is_kernel:
+          type: boolean
+          x-go-type-skip-optional-pointer: true
+        stats:
+          $ref: '#/components/schemas/FileIOStats'
+        self:
+          $ref: '#/components/schemas/FileIOStats'
+        labels:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          items:
+            $ref: '#/components/schemas/FileIOLabel'
+        children:
+          type: array
+          x-go-type-skip-optional-pointer: true
+          items:
+            $ref: '#/components/schemas/FileIONode'
+    FileIOFrame:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+        file:
+          type: string
+          x-go-type-skip-optional-pointer: true
+        line:
+          type: integer
+          format: int64
+          x-go-type-skip-optional-pointer: true
+    FileIOLabel:
+      type: object
+      additionalProperties: false
+      required: [name, kind]
+      properties:
+        name:
+          type: string
+        kind:
+          type: integer
+          enum: [1, 2]
+          description: 1 is a string label; 2 is a numeric label.
+        string_value:
+          type: string
+          x-go-type-skip-optional-pointer: true
+        number_value:
+          type: integer
+          format: int64
+          x-go-type-skip-optional-pointer: true
+        number_unit:
+          type: string
+          x-go-type-skip-optional-pointer: true
+    FileIOContainer:
+      type: object
+      additionalProperties: false
+      required: [id, hostname, host_namespace, type, qos]
+      properties:
+        id:
+          type: string
+        hostname:
+          type: string
+        host_namespace:
+          type: string
+        type:
+          type: string
+        qos:
+          type: string
+          x-go-name: QoS
     ProtobufPayload:
       type: string
       format: binary
     ProfilingType:
       type: string
-      enum: [cpu, memory]
-      x-enum-varnames: [ProfilingTypeCPU, ProfilingTypeMemory]
+      enum: [cpu, memory, io]
+      x-enum-varnames: [ProfilingTypeCPU, ProfilingTypeMemory, ProfilingTypeIO]
     ProfilingLanguage:
       type: string
       enum: [c, c++, go, java, python]
@@ -617,6 +835,8 @@ components:
         - virtual_alloc
         - physical_alloc
         - physical_usage
+        - time
+        - count
       x-enum-varnames:
         - ProfilingModeOnCPU
         - ProfilingModeOffCPU
@@ -625,6 +845,8 @@ components:
         - ProfilingModeVirtualAlloc
         - ProfilingModePhysicalAlloc
         - ProfilingModePhysicalUsage
+        - ProfilingModeIOTime
+        - ProfilingModeIOCount
     TracingType:
       type: string
       enum: [networking_drop, io_tracing, tcp_retransmit]
@@ -685,6 +907,19 @@ components:
         binary_match_path:
           type: string
           minLength: 1
+        io_sample_interval_us:
+          type: integer
+          minimum: 1
+          maximum: 9223372036854775
+          x-go-type: uint64
+          x-go-name: IOSampleIntervalUS
+          description: Required only for native IO time mode; mutually exclusive with io_sample_every.
+        io_sample_every:
+          type: integer
+          minimum: 1
+          x-go-type: uint64
+          x-go-name: IOSampleEvery
+          description: Required only for native IO count mode; mutually exclusive with io_sample_interval_us.
     ProfilingJob:
       allOf:
         - $ref: '#/components/schemas/Job'
@@ -700,6 +935,17 @@ components:
               $ref: '#/components/schemas/ProfilingMode'
             binary_match_path:
               type: string
+            io_sample_interval_us:
+              type: integer
+              minimum: 1
+              maximum: 9223372036854775
+              x-go-type: uint64
+              x-go-name: IOSampleIntervalUS
+            io_sample_every:
+              type: integer
+              minimum: 1
+              x-go-type: uint64
+              x-go-name: IOSampleEvery
     CreateTracingJobRequest:
       type: object
       additionalProperties: false
@@ -776,8 +1022,9 @@ components:
           nullable: true
         result_url:
           type: string
-          format: uri
+          format: uri-reference
           nullable: true
+          description: Result reference. Resolve an IO absolute-path reference against the apiserver origin and send the caller's Bearer token; CPU/memory results can point to an external dashboard.
     ProfilingCapability:
       type: object
       additionalProperties: false

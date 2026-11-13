@@ -36,10 +36,6 @@ func runAction(cliCtx *cli.Context, signalLog *bytes.Buffer) error {
 	if !ok {
 		return fmt.Errorf("no profiling implementation for language %q", cfg.Language)
 	}
-	meta, err := provider.New(implementation, &cfg.Provider)
-	if err != nil {
-		return err
-	}
 	ctx, cancel := newSignalContext(cliCtx.Context, signalLog)
 	defer cancel()
 	if implementation == profiling.ImplementationNative {
@@ -64,6 +60,13 @@ func runAction(cliCtx *cli.Context, signalLog *bytes.Buffer) error {
 		log.Info("pprof server started on 127.0.0.1:6000")
 	}
 
+	if cfg.Provider.Type == profiling.TypeIO {
+		return provider.RunIO(ctx, &cfg.Provider, cfg.Output, cfg.TaskID)
+	}
+	meta, err := provider.New(implementation, &cfg.Provider)
+	if err != nil {
+		return err
+	}
 	log.Infof("using profiler: %s-%s (%s)", meta.Implementation, meta.Type, meta.Description)
 
 	return profile.Run(ctx, profile.RunConfig{

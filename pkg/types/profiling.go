@@ -38,6 +38,16 @@ type AggregationWindow struct {
 	Aggregated     AggregatedProfile `json:"aggregated"`
 }
 
+// ProfilingContainer preserves metadata observed while a task's container was
+// alive. Receivers must validate its identity before using it after retirement.
+type ProfilingContainer struct {
+	ID            string `json:"id"`
+	Hostname      string `json:"hostname"`
+	HostNamespace string `json:"host_namespace"`
+	Type          string `json:"type"`
+	QoS           string `json:"qos"`
+}
+
 type ProfileFrame struct {
 	Name string `json:"name"`
 	File string `json:"file,omitempty"`

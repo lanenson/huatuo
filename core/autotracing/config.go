@@ -198,13 +198,16 @@ type Config struct {
 	}
 
 	IOTracing struct {
-		RbpsThreshold         uint64 `default:"2000"`
-		WbpsThreshold         uint64 `default:"1500"`
-		UtilThreshold         uint64 `default:"90"`
-		AwaitThreshold        uint64 `default:"100"`
-		RunTracingToolTimeout uint64 `default:"10"`
-		MaxProcDump           int    `default:"10"`
-		MaxFilesPerProcDump   int    `default:"5"`
+		ProfileStackMode       string `default:"count"`
+		ProfileStackEvery      uint64 `default:"100"`
+		ProfileStackIntervalUS uint64 `default:"0"`
+		RbpsThreshold          uint64 `default:"2000"`
+		WbpsThreshold          uint64 `default:"1500"`
+		UtilThreshold          uint64 `default:"90"`
+		AwaitThreshold         uint64 `default:"100"`
+		RunTracingToolTimeout  uint64 `default:"10"`
+		MaxProcDump            int    `default:"10"`
+		MaxFilesPerProcDump    int    `default:"5"`
 	}
 
 	IRQTracing IRQTracingConfig

@@ -16,3 +16,6 @@ package profiling
 
 // StoreServiceName routes profiling windows independently of their source tool.
 const StoreServiceName = "profiling_store_service"
+
+// IOCaptureServiceName hands a completed capture to its parent iotracing event.
+const IOCaptureServiceName = "io_profile_capture"

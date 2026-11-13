@@ -39,6 +39,7 @@ import (
 	"github.com/ccfos/huatuo/internal/toolstream"
 	"github.com/ccfos/huatuo/internal/tracing"
 	"github.com/ccfos/huatuo/pkg/metric"
+	"github.com/ccfos/huatuo/pkg/profiling"
 	"github.com/ccfos/huatuo/pkg/types"
 )
 
@@ -58,6 +59,7 @@ type pendingIOTracingReason struct {
 	startedTimestamp timeutil.Timestamp
 	received         chan struct{}
 	result           chan error
+	profile          *pendingIOProfile
 }
 
 func init() {
@@ -65,7 +67,7 @@ func init() {
 	toolstream.RegisterDefault[types.IOTracingSnapshot](iotracingToolName, handleIotracingEvent)
 }
 
-func handleIotracingEvent(_ context.Context, request *toolstream.Request[types.IOTracingSnapshot]) error {
+func handleIotracingEvent(ctx context.Context, request *toolstream.Request[types.IOTracingSnapshot]) error {
 	if request.Data == nil {
 		return nil
 	}
@@ -81,14 +83,21 @@ func handleIotracingEvent(_ context.Context, request *toolstream.Request[types.I
 	}
 	reason := pending.reason
 
+	profile, profileErr := pending.profile.wait(ctx)
+	profileError := ""
+	if profileErr != nil {
+		profileError = profileErr.Error()
+	}
 	err := tracing.Save(&tracing.WriteRequest{
 		TracerName:       iotracingToolName,
 		StartedTimestamp: pending.startedTimestamp,
 		TracerData: &ioStatusData{
-			Reason:        reason,
-			FailureReason: ev.FailureReason,
-			Processes:     ev.Processes,
-			StallStacks:   ev.StallStacks,
+			Reason:         reason,
+			FailureReason:  ev.FailureReason,
+			Processes:      ev.Processes,
+			StallStacks:    ev.StallStacks,
+			IOProfile:      profile,
+			IOProfileError: profileError,
 		},
 		TracerRunType: types.TracerRunTypeAutotracing,
 	})
@@ -127,6 +136,7 @@ type ioTracing struct {
 	runDurationSeconds      uint64
 	maxProcesses            int
 	maxFilesPerProcess      int
+	profileSpec             profiling.Spec
 }
 
 type diskStatusSnapshot struct {
@@ -143,10 +153,12 @@ type rawDiskstatsSnapshot struct {
 //go:generate $BPF_COMPILE $BPF_INCLUDE -s $BPF_DIR/iotracing.c -o $BPF_DIR/iotracing.o
 
 type ioStatusData struct {
-	Reason        *reasonSnapshot            `json:"reason_snapshot"`
-	FailureReason string                     `json:"failure_reason,omitempty"`
-	Processes     []types.ProcessFileIOStats `json:"process_file_io_stats"`
-	StallStacks   []types.IOScheduleEvent    `json:"io_schedule_timeout_stacks"`
+	Reason         *reasonSnapshot            `json:"reason_snapshot"`
+	FailureReason  string                     `json:"failure_reason,omitempty"`
+	Processes      []types.ProcessFileIOStats `json:"process_file_io_stats"`
+	StallStacks    []types.IOScheduleEvent    `json:"io_schedule_timeout_stacks"`
+	IOProfile      *ioProfileReport           `json:"io_profile,omitempty"`
+	IOProfileError string                     `json:"io_profile_error,omitempty"`
 }
 
 type diskStatus struct {
@@ -534,12 +546,32 @@ func newIOTracer(config *Config) (*ioTracing, error) {
 		)
 	}
 
+	profileSpec := profiling.Spec{
+		Type:               profiling.TypeIO,
+		Language:           profiling.LanguageC,
+		Mode:               profiling.Mode(config.IOTracing.ProfileStackMode),
+		IOSampleEvery:      config.IOTracing.ProfileStackEvery,
+		IOSampleIntervalUS: config.IOTracing.ProfileStackIntervalUS,
+	}
+	if profileSpec.Mode == "" {
+		profileSpec.Mode = profiling.ModeIOCount
+		if profileSpec.IOSampleEvery == 0 && profileSpec.IOSampleIntervalUS == 0 {
+			profileSpec.IOSampleEvery = 100
+		}
+	}
+	if err := profileSpec.Validate(); err != nil {
+		return nil, fmt.Errorf("IO profile sampling: %w", err)
+	}
+	if config.IOTracing.RunTracingToolTimeout > uint64(maxProfileDurationSeconds) {
+		return nil, errors.New("IO capture duration exceeds the supported profiling window")
+	}
 	return &ioTracing{
 		thresholds:              thresholds,
 		samplingIntervalSeconds: iotracingSamplingIntervalSeconds,
 		runDurationSeconds:      config.IOTracing.RunTracingToolTimeout,
 		maxProcesses:            config.IOTracing.MaxProcDump,
 		maxFilesPerProcess:      config.IOTracing.MaxFilesPerProcDump,
+		profileSpec:             profileSpec,
 	}, nil
 }
 
@@ -570,8 +602,22 @@ func (i *ioTracing) Start(ctx context.Context) error {
 		received:         make(chan struct{}),
 		result:           make(chan error, 1),
 	}
-	pendingReasons.Store(taskID, pending)
 
+	profileCtx, cancelProfile := context.WithCancel(ctx)
+	pending.profile = newPendingIOProfile(cancelProfile)
+	pendingReasons.Store(taskID, pending)
+	pendingIOProfiles.Store(taskID, pending.profile)
+	profileStopped := make(chan struct{})
+	go func() {
+		defer close(profileStopped)
+		err := runIOProfileCommand(profileCtx, taskID, i.runDurationSeconds, &i.profileSpec)
+		if err != nil {
+			pending.profile.complete(nil, err)
+		} else {
+			pending.profile.complete(nil, errors.New("IO profiler exited without a capture"))
+		}
+	}()
+	defer func() { cancelProfile(); <-profileStopped; pendingIOProfiles.Delete(taskID) }()
 	args := []string{
 		"--bpf-path", path.Join(internalconfig.CoreBpfDir, "iotracing.o"),
 		"--output-storage", toolstream.DefaultSockPath,

@@ -280,12 +280,16 @@ func (*Service) Capabilities() []profilingdomain.Capability {
 	return profilingdomain.Capabilities()
 }
 
-// ResultURL returns a Job-scoped dashboard URL only for published results.
+// ResultURL returns a Job-scoped result URL only for published results.
 func (s *Service) ResultURL(
 	ctx context.Context,
 	resultJob *job.Job,
 ) (*string, error) {
-	if s.dashboardBaseURL == "" || resultJob == nil || resultJob.EndedAt.IsZero() {
+	if resultJob == nil || resultJob.EndedAt.IsZero() {
+		return nil, nil
+	}
+	isFileIO := resultJob.Spec.Profiling != nil && resultJob.Spec.Profiling.Type == profilingdomain.TypeIO
+	if s.dashboardBaseURL == "" && !isFileIO {
 		return nil, nil
 	}
 	if resultJob.Status != job.StatusTerminal || resultJob.Terminal == nil ||
@@ -302,6 +306,10 @@ func (s *Service) ResultURL(
 	}
 	if !published {
 		return nil, nil
+	}
+	if isFileIO {
+		result := "/v1/profiling/" + url.PathEscape(resultJob.ID) + "/io/flamegraph"
+		return &result, nil
 	}
 	filter := &profilingstore.Filter{
 		ID:    resultJob.ID,

@@ -223,8 +223,12 @@ func validateCommonOptions(ctx *cli.Context) error {
 		}
 	}
 
-	if err := validateAggregationWindow(ctx.Int("duration"), ctx.Int("aggr-interval")); err != nil {
-		return err
+	if profiling.Type(ctx.String("type")) != profiling.TypeIO {
+		if err := validateAggregationWindow(ctx.Int("duration"), ctx.Int("aggr-interval")); err != nil {
+			return err
+		}
+	} else if ctx.Int("duration") <= 0 {
+		return fmt.Errorf("IO capture duration must be positive")
 	}
 
 	if !ctx.IsSet("output-path") || !ctx.IsSet("output-format") {
@@ -233,11 +237,24 @@ func validateCommonOptions(ctx *cli.Context) error {
 	if err := output.ValidateDestination(ctx.String("output-path")); err != nil {
 		return err
 	}
-	if ctx.String("output-format") == "remote-store" && ctx.String("task-id") == "" {
+	if (ctx.String("output-format") == "remote-store" || ctx.String("output-format") == "autotracing") && ctx.String("task-id") == "" {
 		return fmt.Errorf("--task-id must not be empty when --output-format=remote-store")
 	}
 	if err := validateOutputFormat(ctx.String("output-format")); err != nil {
 		return err
+	}
+	if ctx.String("output-format") == "autotracing" && profiling.Type(ctx.String("type")) != profiling.TypeIO {
+		return fmt.Errorf("autotracing output requires --type=io")
+	}
+	if profiling.Type(ctx.String("type")) == profiling.TypeIO {
+		switch ctx.String("output-format") {
+		case "svg", "flamegraph", "json", "remote-store", "autotracing":
+		default:
+			return fmt.Errorf(
+				"--output-format=%s is not supported with --type=io; use svg, flamegraph, json or remote-store",
+				ctx.String("output-format"),
+			)
+		}
 	}
 
 	return nil
@@ -254,6 +271,10 @@ func validateNumericOptions(profileType profiling.Type, freq, maxProfilerProcess
 }
 
 func validateProfilerFlagCompatibility(ctx *cli.Context, lang profiling.Language, typ profiling.Type) error {
+	if err := validateIOSamplingOptions(ctx, typ); err != nil {
+		return err
+	}
+
 	implementation, _ := profiling.ImplementationFor(lang, typ)
 	native := implementation == profiling.ImplementationNative
 	nativeCPU := native && typ == profiling.TypeCPU
@@ -320,9 +341,64 @@ func validateProfilerFlagCompatibility(ctx *cli.Context, lang profiling.Language
 	return nil
 }
 
+func validateIOSamplingOptions(ctx *cli.Context, typ profiling.Type) error {
+	for _, name := range []string{
+		"kubelet-read-only-port", "kubelet-authorized-port", "kubelet-client-cert-path", "docker-api-version",
+	} {
+		if ctx.IsSet(name) && typ != profiling.TypeIO {
+			return fmt.Errorf("--%s requires --type=io", name)
+		}
+	}
+	for _, name := range []string{"kubelet-read-only-port", "kubelet-authorized-port"} {
+		if ctx.Uint(name) > 65535 {
+			return fmt.Errorf("--%s must not exceed 65535", name)
+		}
+	}
+
+	if typ == profiling.TypeIO && ctx.IsSet("aggr-interval") {
+		return fmt.Errorf("--aggr-interval does not apply to one-shot IO captures")
+	}
+	isModeSet := ctx.IsSet("io-stack-mode")
+	isIntervalSet := ctx.IsSet("io-stack-interval")
+	isEverySet := ctx.IsSet("io-stack-every")
+	if typ != profiling.TypeIO {
+		if isModeSet || isIntervalSet || isEverySet {
+			return fmt.Errorf("--io-stack-mode, --io-stack-interval and --io-stack-every require --type=io")
+		}
+		return nil
+	}
+
+	if !isModeSet {
+		return fmt.Errorf("--io-stack-mode is required when --type=io")
+	}
+	if isIntervalSet && isEverySet {
+		return fmt.Errorf("--io-stack-interval and --io-stack-every are mutually exclusive")
+	}
+	switch profiling.Mode(ctx.String("io-stack-mode")) {
+	case profiling.ModeIOTime:
+		if isEverySet || !isIntervalSet || ctx.Duration("io-stack-interval") <= 0 {
+			return fmt.Errorf("--io-stack-mode=time requires a positive --io-stack-interval and no --io-stack-every")
+		}
+	case profiling.ModeIOCount:
+		if isIntervalSet || !isEverySet || ctx.Uint64("io-stack-every") == 0 {
+			return fmt.Errorf("--io-stack-mode=count requires a positive --io-stack-every and no --io-stack-interval")
+		}
+	default:
+		return fmt.Errorf("unsupported IO stack mode %q; allowed: time, count", ctx.String("io-stack-mode"))
+	}
+	if ctx.IsSet("thread-group") && !ctx.Bool("thread-group") {
+		return fmt.Errorf("--thread-group=false is not supported with --type=io; IO profiles all process threads")
+	}
+	if ctx.IsSet("freq") {
+		return fmt.Errorf("--freq is not used with --type=io")
+	}
+
+	return nil
+}
+
 func validateOutputFormat(format string) error {
 	switch format {
-	case "collapsed", "flamegraph", "svg", "json", "remote-store":
+	case "collapsed", "flamegraph", "svg", "json", "remote-store", "autotracing":
 		return nil
 	default:
 		return fmt.Errorf("unsupported output format %q", format)

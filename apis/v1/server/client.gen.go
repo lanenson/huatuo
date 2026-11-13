@@ -135,6 +135,12 @@ type ClientInterface interface {
 	// GetProfilingJob request
 	GetProfilingJob(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// GetFileIOProfile request
+	GetFileIOProfile(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetFileIOFlamegraph request
+	GetFileIOFlamegraph(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// GetRawProfiles request
 	GetRawProfiles(ctx context.Context, requestID RequestID, params *GetRawProfilesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -281,6 +287,30 @@ func (c *Client) SelectMergeStacktracesWithBody(ctx context.Context, contentType
 
 func (c *Client) GetProfilingJob(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetProfilingJobRequest(c.Server, requestID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetFileIOProfile(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetFileIOProfileRequest(c.Server, requestID)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetFileIOFlamegraph(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetFileIOFlamegraphRequest(c.Server, requestID)
 	if err != nil {
 		return nil, err
 	}
@@ -724,6 +754,74 @@ func NewGetProfilingJobRequest(server string, requestID RequestID) (*http.Reques
 	return req, nil
 }
 
+// NewGetFileIOProfileRequest generates requests for GetFileIOProfile
+func NewGetFileIOProfileRequest(server string, requestID RequestID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "request_id", requestID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/profiling/%s/io", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetFileIOFlamegraphRequest generates requests for GetFileIOFlamegraph
+func NewGetFileIOFlamegraphRequest(server string, requestID RequestID) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithOptions("simple", false, "request_id", requestID, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationPath, Type: "string", Format: ""})
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/v1/profiling/%s/io/flamegraph", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewGetRawProfilesRequest generates requests for GetRawProfiles
 func NewGetRawProfilesRequest(server string, requestID RequestID, params *GetRawProfilesParams) (*http.Request, error) {
 	var err error
@@ -1107,6 +1205,12 @@ type ClientWithResponsesInterface interface {
 	// GetProfilingJobWithResponse request
 	GetProfilingJobWithResponse(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*GetProfilingJobResponse, error)
 
+	// GetFileIOProfileWithResponse request
+	GetFileIOProfileWithResponse(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*GetFileIOProfileResponse, error)
+
+	// GetFileIOFlamegraphWithResponse request
+	GetFileIOFlamegraphWithResponse(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*GetFileIOFlamegraphResponse, error)
+
 	// GetRawProfilesWithResponse request
 	GetRawProfilesWithResponse(ctx context.Context, requestID RequestID, params *GetRawProfilesParams, reqEditors ...RequestEditorFn) (*GetRawProfilesResponse, error)
 
@@ -1469,6 +1573,81 @@ func (r GetProfilingJobResponse) ContentType() string {
 	return ""
 }
 
+type GetFileIOProfileResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *FileIOProfileResponse
+	JSON400      *BadRequest
+	JSON401      *Unauthenticated
+	JSON403      *PermissionDenied
+	JSON404      *NotFound
+	JSON409      *Conflict
+	JSON413      *ResultTooLarge
+	JSON500      *InternalError
+	JSON503      *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r GetFileIOProfileResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetFileIOProfileResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetFileIOProfileResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type GetFileIOFlamegraphResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequest
+	JSON401      *Unauthenticated
+	JSON403      *PermissionDenied
+	JSON404      *NotFound
+	JSON409      *Conflict
+	JSON413      *ResultTooLarge
+	JSON500      *InternalError
+	JSON503      *ServiceUnavailable
+}
+
+// Status returns HTTPResponse.Status
+func (r GetFileIOFlamegraphResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetFileIOFlamegraphResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r GetFileIOFlamegraphResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
 type GetRawProfilesResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -1812,6 +1991,24 @@ func (c *ClientWithResponses) GetProfilingJobWithResponse(ctx context.Context, r
 		return nil, err
 	}
 	return ParseGetProfilingJobResponse(rsp)
+}
+
+// GetFileIOProfileWithResponse request returning *GetFileIOProfileResponse
+func (c *ClientWithResponses) GetFileIOProfileWithResponse(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*GetFileIOProfileResponse, error) {
+	rsp, err := c.GetFileIOProfile(ctx, requestID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetFileIOProfileResponse(rsp)
+}
+
+// GetFileIOFlamegraphWithResponse request returning *GetFileIOFlamegraphResponse
+func (c *ClientWithResponses) GetFileIOFlamegraphWithResponse(ctx context.Context, requestID RequestID, reqEditors ...RequestEditorFn) (*GetFileIOFlamegraphResponse, error) {
+	rsp, err := c.GetFileIOFlamegraph(ctx, requestID, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetFileIOFlamegraphResponse(rsp)
 }
 
 // GetRawProfilesWithResponse request returning *GetRawProfilesResponse
@@ -2402,6 +2599,163 @@ func ParseGetProfilingJobResponse(rsp *http.Response) (*GetProfilingJobResponse,
 			return nil, err
 		}
 		response.JSON500 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetFileIOProfileResponse parses an HTTP response from a GetFileIOProfileWithResponse call
+func ParseGetFileIOProfileResponse(rsp *http.Response) (*GetFileIOProfileResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetFileIOProfileResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest FileIOProfileResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthenticated
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest PermissionDenied
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest ResultTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetFileIOFlamegraphResponse parses an HTTP response from a GetFileIOFlamegraphWithResponse call
+func ParseGetFileIOFlamegraphResponse(rsp *http.Response) (*GetFileIOFlamegraphResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetFileIOFlamegraphResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequest
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest Unauthenticated
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 403:
+		var dest PermissionDenied
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON403 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFound
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest Conflict
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest ResultTooLarge
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 500:
+		var dest InternalError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON500 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 503:
+		var dest ServiceUnavailable
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON503 = &dest
 
 	}
 
