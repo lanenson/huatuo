@@ -29,6 +29,7 @@ import (
 	internalconfig "github.com/ccfos/huatuo/internal/config"
 	"github.com/ccfos/huatuo/internal/profiling/flamegraph"
 	"github.com/ccfos/huatuo/internal/toolstream"
+	"github.com/ccfos/huatuo/pkg/profiling"
 )
 
 func TestRunProfileCommand(t *testing.T) {
@@ -277,5 +278,64 @@ func TestProfileToolConfiguration(t *testing.T) {
 	}
 	if cfg.CPUIdle.Tool != cpuToolPerf || cfg.CPUSys.Tool != cpuToolPerf {
 		t.Fatalf("default tools: cpuidle=%q cpusys=%q", cfg.CPUIdle.Tool, cfg.CPUSys.Tool)
+	}
+}
+
+func TestIOProfileCommandUsesTriggerWindow(t *testing.T) {
+	previous := internalconfig.CoreBinDir
+	t.Cleanup(func() { internalconfig.CoreBinDir = previous })
+	for _, mode := range []profiling.Mode{profiling.ModeIOCount, profiling.ModeIOTime} {
+		t.Run(string(mode), func(t *testing.T) {
+			directory := t.TempDir()
+			internalconfig.CoreBinDir = directory
+			calls := filepath.Join(directory, "args")
+			t.Setenv("IO_PROFILE_ARGS", calls)
+			script := []byte("#!/bin/sh\nprintf '%s\n' \"$@\" > \"$IO_PROFILE_ARGS\"\n")
+			// The command fixture only records its interface; the caller owns assertions.
+			command := filepath.Join(directory, "profiler")
+			if err := os.WriteFile(command, script, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(command, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			spec := profiling.Spec{
+				Type:          profiling.TypeIO,
+				Language:      profiling.LanguageC,
+				Mode:          mode,
+				IOSampleEvery: 100,
+			}
+			expected, forbidden, value := "--io-stack-every", "--io-stack-interval", "100"
+			if mode == profiling.ModeIOTime {
+				spec.IOSampleEvery = 0
+				spec.IOSampleIntervalUS = 1500
+				expected, forbidden, value = "--io-stack-interval", "--io-stack-every", "1500us"
+			}
+			if err := runIOProfileCommand(t.Context(), "disk-trigger", 3, &spec); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile(calls)
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := strings.Split(strings.TrimSpace(string(raw)), "\n")
+			for _, pair := range [][2]string{{"--duration", "3"}, {"--task-id", "disk-trigger"}, {"--io-stack-mode", string(mode)}, {expected, value}, {"--output-format", "autotracing"}} {
+				index := -1
+				for i, arg := range args {
+					if arg == pair[0] {
+						index = i
+						break
+					}
+				}
+				if index < 0 || index+1 >= len(args) || args[index+1] != pair[1] {
+					t.Fatalf("missing %q in %q", pair, args)
+				}
+			}
+			for _, arg := range args {
+				if arg == "--aggr-interval" || arg == forbidden {
+					t.Fatalf("unexpected periodic/conflicting argument %q", arg)
+				}
+			}
+		})
 	}
 }

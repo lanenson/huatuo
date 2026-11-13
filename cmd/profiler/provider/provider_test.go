@@ -15,10 +15,13 @@
 package provider
 
 import (
+	"encoding/binary"
+	"math"
 	"reflect"
 	"testing"
 	"time"
 
+	"github.com/ccfos/huatuo/internal/bpf/abi"
 	"github.com/ccfos/huatuo/internal/profiling/pipeline"
 	"github.com/ccfos/huatuo/pkg/profiling"
 )
@@ -111,6 +114,51 @@ func TestNewSelectsAggregationPolicy(t *testing.T) {
 				t.Fatalf("construction modified configuration: %+v", cfg)
 			}
 		})
+	}
+}
+
+func TestFileIOPerCPUCounterReduction(t *testing.T) {
+	var raw []byte
+	for _, value := range []abi.ProfilerIOValue{
+		{
+			Bytes:         4096,
+			Count:         1,
+			DurationSumNS: 200,
+		},
+		{},
+		{
+			Bytes:         17,
+			Count:         1,
+			DurationSumNS: 300,
+		},
+	} {
+		var err error
+		raw, err = binary.Append(raw, binary.NativeEndian, value)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := sumIOPerCPU(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := abi.ProfilerIOValue{
+		Bytes:         4113,
+		Count:         2,
+		DurationSumNS: 500,
+	}
+	if got != want {
+		t.Fatalf("totals=%+v want=%+v", got, want)
+	}
+	if _, err := sumIOPerCPU(raw[:len(raw)-1]); err == nil {
+		t.Fatal("truncated per-CPU record accepted")
+	}
+	tooLarge, err := binary.Append(nil, binary.NativeEndian, abi.ProfilerIOValue{Count: math.MaxUint64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sumIOPerCPU(tooLarge); err == nil {
+		t.Fatal("overflowing profile counter accepted")
 	}
 }
 

@@ -29,6 +29,7 @@ import (
 	"github.com/ccfos/huatuo/internal/document"
 	"github.com/ccfos/huatuo/internal/procfs"
 	"github.com/ccfos/huatuo/internal/procfs/blockdevice"
+	"github.com/ccfos/huatuo/internal/profiling/fileio"
 	"github.com/ccfos/huatuo/internal/storage/driver"
 	"github.com/ccfos/huatuo/internal/storage/localfile"
 	"github.com/ccfos/huatuo/internal/timeutil"
@@ -75,11 +76,20 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 	exitErr := errors.New("child failed")
 	saveErr := errors.New("save failed")
 	for _, test := range []struct {
-		name    string
-		exitErr error
-		saveErr error
+		name        string
+		exitErr     error
+		saveErr     error
+		profileMode string
 	}{
 		{name: "success"},
+		{
+			name:        "supplement attached",
+			profileMode: "valid",
+		},
+		{
+			name:        "invalid supplement preserves original",
+			profileMode: "invalid",
+		},
 		{name: "failed child keeps partial report", exitErr: exitErr},
 		{name: "save failure", saveErr: saveErr},
 		{name: "child and save failure", exitErr: exitErr, saveErr: saveErr},
@@ -123,6 +133,38 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 				startedTimestamp: timeutil.Now(),
 				received:         make(chan struct{}),
 				result:           make(chan error, 1),
+			}
+			if test.profileMode != "" {
+				child, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				pending.profile = newPendingIOProfile(cancel)
+				pendingIOProfiles.Store(taskID, pending.profile)
+				window := &types.ProfilingWindow{ProfileType: "invalid"}
+				if test.profileMode == "valid" {
+					builder := fileio.NewBuilder(1, 1000000000)
+					if err := builder.Add([]types.ProfileFrame{{Name: "writer"}}, []types.ProfileLabel{types.ProfileStringLabel("direction", "write"), types.ProfileStringLabel("attribution", "other"), types.ProfileStringLabel("result", "success")}, fileio.Stats{
+						Bytes:      4096,
+						Count:      1,
+						DurationNS: 1000,
+					}); err != nil {
+						t.Fatal(err)
+					}
+					profile, err := builder.Profile(child)
+					if err != nil {
+						t.Fatal(err)
+					}
+					window = &types.ProfilingWindow{
+						ProfileType: fileio.ProfileType,
+						Profile:     profile,
+					}
+				}
+				err := handleIOProfileCapture(child, &toolstream.Request[types.ProfilingWindow]{
+					TaskID: taskID,
+					Data:   window,
+				})
+				if (err != nil) != (test.profileMode == "invalid") {
+					t.Fatalf("supplement error=%v", err)
+				}
 			}
 			pendingReasons.Store(taskID, pending)
 			report := &types.IOTracingSnapshot{
@@ -190,6 +232,16 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 			wantData := ioStatusData{
 				Reason: pending.reason, FailureReason: report.FailureReason,
 				Processes: report.Processes, StallStacks: report.StallStacks,
+			}
+			if test.profileMode == "invalid" {
+				wantData.IOProfileError = "IO event requires one complete capture"
+			}
+			if test.profileMode == "valid" {
+				attached := document.TracerData.IOProfile
+				if attached == nil || attached.DurationNS != 1000000000 || len(attached.Groups) != 2 || attached.Groups[0].Stats.Bytes != 4096 || !strings.Contains(attached.FlamegraphSVG, "WRITE / host") {
+					t.Fatalf("IO supplement was not attached: %+v", attached)
+				}
+				wantData.IOProfile = pending.profile.report
 			}
 			if !reflect.DeepEqual(document.TracerData, wantData) {
 				t.Fatalf("saved snapshot = %+v, want %+v", document.TracerData, wantData)

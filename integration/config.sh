@@ -676,3 +676,30 @@ EOF
 		write_config_bamai_elasticsearch "${STORAGE_ADDR}" "${STORAGE_USERNAME}" "${STORAGE_PASSWORD}" "${DLOAD_INDEX}"
 	fi
 }
+
+# IO result policy needs a regular owner and a different regular reader.
+write_config_apiserver_io_results() {
+	write_config_apiserver_continuous_profiling
+	cat << EOF_CONFIG
+
+[[Auth.Users]]
+    ID = "integration-io-other"
+    BearerToken = "${IO_RESULT_OTHER_TOKEN}"
+    Permissions = ["/v1/profiling", "/v1/profiling/**"]
+EOF_CONFIG
+}
+
+# Synthetic diskstats drives the existing detector; local storage owns the event.
+write_config_bamai_iotracing_profile() {
+	write_config_blacklist_except iotracing
+	write_config_bamai_http
+	write_config_bamai_auth "integration-node-token"
+	write_config_storage_local "${HUATUO_BAMAI_TEST_TMPDIR}/events"
+	cat << EOF_CONFIG
+
+[AutoTracing.IOTracing]
+    RunTracingToolTimeout = 2
+    ProfileStackMode = "count"
+    ProfileStackEvery = 16
+EOF_CONFIG
+}

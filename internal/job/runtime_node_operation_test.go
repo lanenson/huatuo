@@ -23,6 +23,7 @@ import (
 
 	nodeapi "github.com/ccfos/huatuo/apis/v1/node"
 	"github.com/ccfos/huatuo/client"
+	"github.com/ccfos/huatuo/pkg/profiling"
 )
 
 func TestRuntimeStartOperationReturnsContextCancellation(t *testing.T) {
@@ -39,6 +40,39 @@ func TestRuntimeStartOperationReturnsContextCancellation(t *testing.T) {
 	}
 	if errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("startOperation() error = %v, must not be ErrShuttingDown", err)
+	}
+}
+
+func TestBuildStartOperationRequestPreservesIOSampling(t *testing.T) {
+	for _, mode := range []profiling.Mode{profiling.ModeIOTime, profiling.ModeIOCount} {
+		t.Run(string(mode), func(t *testing.T) {
+			pendingJob := testJob("io-job", StatusPending, time.Now())
+			pendingJob.Spec.Profiling.Type = profiling.TypeIO
+			pendingJob.Spec.Profiling.Mode = mode
+			if mode == profiling.ModeIOTime {
+				pendingJob.Spec.Profiling.IOSampleIntervalUS = 1500
+			} else {
+				pendingJob.Spec.Profiling.IOSampleEvery = 100
+			}
+			request, err := buildStartOperationRequest(pendingJob)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec, err := request.Spec.AsProfilingOperationSpec()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if spec.Type != nodeapi.ProfilingTypeIO || string(spec.Mode) != string(mode) {
+				t.Fatalf("lost IO type or mode: %+v", spec)
+			}
+			if mode == profiling.ModeIOTime {
+				if spec.IOSampleIntervalUS == nil || *spec.IOSampleIntervalUS != 1500 || spec.IOSampleEvery != nil {
+					t.Fatalf("lost time sampling or serialized unused count: %+v", spec)
+				}
+			} else if spec.IOSampleEvery == nil || *spec.IOSampleEvery != 100 || spec.IOSampleIntervalUS != nil {
+				t.Fatalf("lost count sampling or serialized unused interval: %+v", spec)
+			}
+		})
 	}
 }
 

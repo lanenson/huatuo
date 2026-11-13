@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ccfos/huatuo/internal/pod"
 	"github.com/ccfos/huatuo/pkg/observation"
 	profilingdomain "github.com/ccfos/huatuo/pkg/profiling"
 )
@@ -136,6 +137,57 @@ func TestBuildCommandPassesSharedToolDir(t *testing.T) {
 
 			if index == -1 || index+1 >= len(command.Args) || command.Args[index+1] != config.ToolDir {
 				t.Fatalf("command args = %q, want shared root as one --tool-path argument", command.Args)
+			}
+		})
+	}
+}
+
+func TestBuildIOCommandPreservesSamplingAndPodSettings(t *testing.T) {
+	for _, mode := range []profilingdomain.Mode{profilingdomain.ModeIOTime, profilingdomain.ModeIOCount} {
+		t.Run(string(mode), func(t *testing.T) {
+			config := testProfilingConfig(t)
+			config.PodManager = pod.ManagerCtx{
+				PodReadOnlyPort:   12345,
+				PodAuthorizedPort: 12346,
+				PodClientCertPath: "/etc/kubelet/client certificate.pem",
+				DockerAPIVersion:  "1.42",
+			}
+			request := testProfilingRequest()
+			request.Spec.Type = profilingdomain.TypeIO
+			request.Spec.Mode = mode
+			flag, value, forbidden := "--io-stack-interval", "1500us", "--io-stack-every"
+			if mode == profilingdomain.ModeIOTime {
+				request.Spec.IOSampleIntervalUS = 1500
+			} else {
+				request.Spec.IOSampleEvery = 100
+				flag, value, forbidden = "--io-stack-every", "100", "--io-stack-interval"
+			}
+			if err := validateRequest(request); err != nil {
+				t.Fatal(err)
+			}
+			command, err := buildCommand(request, config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, expected := range [][2]string{
+				{"--type", "io"},
+				{"--io-stack-mode", string(mode)},
+				{flag, value},
+				{"--kubelet-read-only-port", "12345"},
+				{"--kubelet-authorized-port", "12346"},
+				{"--kubelet-client-cert-path", "/etc/kubelet/client certificate.pem"},
+				{"--docker-api-version", "1.42"},
+			} {
+				index := slices.Index(command.Args, expected[0])
+				if index < 0 || index+1 >= len(command.Args) || command.Args[index+1] != expected[1] {
+					t.Fatalf("command args %q do not contain %q", command.Args, expected)
+				}
+			}
+			if slices.Contains(command.Args, "--aggr-interval") {
+				t.Fatal("IO command still schedules periodic output")
+			}
+			if slices.Contains(command.Args, forbidden) {
+				t.Fatalf("command contains incompatible flag %q: %q", forbidden, command.Args)
 			}
 		})
 	}

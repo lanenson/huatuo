@@ -15,6 +15,9 @@
 package profiling
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"net/url"
@@ -24,8 +27,10 @@ import (
 
 	"github.com/ccfos/huatuo/internal/httpserver/auth"
 	"github.com/ccfos/huatuo/internal/job"
+	"github.com/ccfos/huatuo/internal/profiling/fileio"
 	"github.com/ccfos/huatuo/pkg/observation"
 	profilingdomain "github.com/ccfos/huatuo/pkg/profiling"
+	"github.com/ccfos/huatuo/pkg/types"
 )
 
 func TestValidateCreateInput(t *testing.T) {
@@ -297,5 +302,76 @@ func TestNormalizePagePreservesExplicitZero(t *testing.T) {
 	limit, offset := NormalizePage(&zero, &zero)
 	if limit != 0 || offset != 0 {
 		t.Fatalf("explicit zero normalized to limit=%d offset=%d", limit, offset)
+	}
+}
+
+func TestFileIOResponseBudget(t *testing.T) {
+	result := &FileIOResult{
+		Groups: []fileio.Group{{
+			Scope:     fileio.ScopeHost,
+			Direction: fileio.DirectionRead,
+			Root: &fileio.Node{
+				Frame: types.ProfileFrame{Name: strings.Repeat("x", 200)},
+			},
+		}},
+	}
+	if err := checkFileIOResponseSize(t.Context(), result, 64); !errors.Is(err, ErrResultTooLarge) {
+		t.Fatalf("got %v, want response too large", err)
+	}
+	if err := checkFileIOResponseSize(t.Context(), result, 4096); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := checkFileIOResponseSize(ctx, result, 4096); !errors.Is(err, context.Canceled) {
+		t.Fatalf("got %v, want cancellation", err)
+	}
+}
+
+func TestFileIOSVGWriterRejectsOversizedWrite(t *testing.T) {
+	var output bytes.Buffer
+	writer := resultLimitWriter{
+		ctx:       t.Context(),
+		writer:    &output,
+		remaining: 4,
+	}
+	if _, err := writer.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("de")); !errors.Is(err, ErrResultTooLarge) {
+		t.Fatalf("got %v, want response too large", err)
+	}
+	if output.String() != "abc" {
+		t.Fatalf("oversized write reached output: %q", output.String())
+	}
+}
+
+func TestFileIOResultIncludesNumericCompleteness(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		name := "incomplete"
+		if complete {
+			name = "complete"
+		}
+		t.Run(name, func(t *testing.T) {
+			data, err := json.Marshal(&FileIOResult{NumericComplete: complete})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded map[string]json.RawMessage
+			if err := json.Unmarshal(data, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			encoded, exists := decoded["numeric_complete"]
+			if !exists {
+				t.Fatal("numeric_complete was omitted from the result")
+			}
+			var got bool
+			if err := json.Unmarshal(encoded, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got != complete {
+				t.Fatalf("numeric_complete = %v, want %v", got, complete)
+			}
+		})
 	}
 }

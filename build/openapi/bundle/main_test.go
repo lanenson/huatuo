@@ -104,3 +104,31 @@ func writeTestFile(t *testing.T, path, content string) {
 		t.Fatalf("os.WriteFile(%q) error = %v", path, err)
 	}
 }
+
+func TestBundlePreservesIntegerBounds(t *testing.T) {
+	directory := t.TempDir()
+	path := filepath.Join(directory, "openapi.yaml")
+	writeTestFile(t, path, `openapi: 3.0.3
+info: {title: Integer bounds, version: v1}
+paths: {}
+components:
+  schemas:
+    Interval:
+      type: integer
+      minimum: -9223372036854775
+      maximum: 9223372036854775
+    Nested:
+      allOf:
+        - type: integer
+          maximum: 18446744073709551615
+`)
+	data, err := bundle(t.Context(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bound := range []string{`"minimum": -9223372036854775`, `"maximum": 9223372036854775`, `"maximum": 18446744073709551615`} {
+		if !strings.Contains(string(data), bound) {
+			t.Fatalf("bundle lost exact bound %s: %s", bound, data)
+		}
+	}
+}

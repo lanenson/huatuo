@@ -421,6 +421,131 @@ func TestOffCPUStatsFlag(t *testing.T) {
 	require.True(t, newValidationCLIContext(t, "--offcpu-stats").Bool("offcpu-stats"))
 }
 
+func TestValidateIOSamplingOptions(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		typ       profiling.Type
+		args      []string
+		wantError bool
+	}{
+		{
+			name:      "missing mode",
+			typ:       profiling.TypeIO,
+			wantError: true,
+		},
+		{
+			name: "time",
+			typ:  profiling.TypeIO,
+			args: []string{"--io-stack-mode", "time", "--io-stack-interval", "1ms"},
+		},
+		{
+			name: "count",
+			typ:  profiling.TypeIO,
+			args: []string{"--io-stack-mode", "count", "--io-stack-every", "100"},
+		},
+		{
+			name:      "periodic IO is rejected",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "count", "--io-stack-every", "100", "--aggr-interval", "1"},
+			wantError: true,
+		},
+		{
+			name:      "missing interval",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "time"},
+			wantError: true,
+		},
+		{
+			name:      "missing count",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "count"},
+			wantError: true,
+		},
+		{
+			name:      "zero interval",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "time", "--io-stack-interval", "0"},
+			wantError: true,
+		},
+		{
+			name:      "negative interval",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "time", "--io-stack-interval", "-1ms"},
+			wantError: true,
+		},
+		{
+			name:      "zero count",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "count", "--io-stack-every", "0"},
+			wantError: true,
+		},
+		{
+			name:      "unknown mode",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "random"},
+			wantError: true,
+		},
+		{
+			name:      "explicit zero count remains incompatible",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "time", "--io-stack-interval", "1ms", "--io-stack-every", "0"},
+			wantError: true,
+		},
+		{
+			name:      "explicit zero interval remains incompatible",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "count", "--io-stack-every", "100", "--io-stack-interval", "0"},
+			wantError: true,
+		},
+		{
+			name:      "IO requires thread group",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "count", "--io-stack-every", "100", "--thread-group=false"},
+			wantError: true,
+		},
+		{
+			name:      "IO rejects CPU frequency",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "count", "--io-stack-every", "100", "--freq", "99"},
+			wantError: true,
+		},
+		{
+			name:      "kubelet port overflow",
+			typ:       profiling.TypeIO,
+			args:      []string{"--io-stack-mode", "count", "--io-stack-every", "100", "--kubelet-read-only-port", "65536"},
+			wantError: true,
+		},
+		{
+			name:      "CPU rejects explicit IO zero",
+			typ:       profiling.TypeCPU,
+			args:      []string{"--io-stack-every", "0"},
+			wantError: true,
+		},
+		{
+			name:      "CPU rejects IO mode",
+			typ:       profiling.TypeCPU,
+			args:      []string{"--io-stack-mode", "time"},
+			wantError: true,
+		},
+		{
+			name:      "CPU rejects kubelet setting",
+			typ:       profiling.TypeCPU,
+			args:      []string{"--kubelet-read-only-port", "0"},
+			wantError: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := newValidationCLIContext(t, test.args...)
+			err := validateProfilerFlagCompatibility(ctx, profiling.LanguageGo, test.typ)
+			if test.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 func TestValidateOutputFormat(t *testing.T) {
 	for _, format := range []string{"collapsed", "flamegraph", "svg", "json", "remote-store"} {
 		require.NoError(t, validateOutputFormat(format))
@@ -797,6 +922,70 @@ func TestCLIOutputOptions(t *testing.T) {
 				require.NoError(t, err)
 			} else {
 				require.ErrorContains(t, err, tc.wantError)
+			}
+		})
+	}
+}
+
+func TestCLIIOOutputFormats(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		format    string
+		wantError string
+	}{
+		{
+			name:      "format must remain explicit",
+			wantError: "must both be specified",
+		},
+		{
+			name:      "collapsed rejects mixed units",
+			format:    "collapsed",
+			wantError: "--output-format=collapsed is not supported with --type=io",
+		},
+		{
+			name:   "SVG",
+			format: "svg",
+		},
+		{
+			name:   "flamegraph",
+			format: "flamegraph",
+		},
+		{
+			name:   "JSON",
+			format: "json",
+		},
+		{
+			name:   "remote store",
+			format: "remote-store",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			isActionCalled := false
+			app := &cli.App{
+				Flags:     appFlags,
+				Before:    runBefore,
+				Writer:    io.Discard,
+				ErrWriter: io.Discard,
+				Action: func(*cli.Context) error {
+					isActionCalled = true
+					return nil
+				},
+			}
+			args := []string{
+				"profiler", "--type", "io", "--language", "go",
+				"--io-stack-mode", "count", "--io-stack-every", "100",
+				"--output-path", filepath.Join(t.TempDir(), "profile"), "--task-id", "io-output",
+			}
+			if test.format != "" {
+				args = append(args, "--output-format", test.format)
+			}
+			err := app.Run(args)
+			if test.wantError != "" {
+				require.ErrorContains(t, err, test.wantError)
+				require.False(t, isActionCalled)
+			} else {
+				require.NoError(t, err)
+				require.True(t, isActionCalled)
 			}
 		})
 	}

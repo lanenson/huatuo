@@ -15,7 +15,9 @@
 package profiling
 
 import (
+	"math"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -30,6 +32,11 @@ func TestSpecValidateAcceptsEveryCapabilityMode(t *testing.T) {
 				Language: capability.Language,
 				Mode:     mode,
 			}
+			if mode == ModeIOTime {
+				spec.IOSampleIntervalUS = 1000
+			} else if mode == ModeIOCount {
+				spec.IOSampleEvery = 100
+			}
 			require.NoError(t, spec.Validate(), "%q/%q/%q", spec.Type, spec.Language, spec.Mode)
 
 			if capability.SupportsBinaryMatch {
@@ -37,6 +44,101 @@ func TestSpecValidateAcceptsEveryCapabilityMode(t *testing.T) {
 				require.NoError(t, spec.Validate(), "%q/%q/%q", spec.Type, spec.Language, spec.Mode)
 			}
 		}
+	}
+}
+
+func TestSpecValidateIOSampling(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		typ       Type
+		mode      Mode
+		interval  uint64
+		every     uint64
+		wantError bool
+	}{
+		{
+			name:     "time",
+			typ:      TypeIO,
+			mode:     ModeIOTime,
+			interval: 1000,
+		},
+		{
+			name:  "count",
+			typ:   TypeIO,
+			mode:  ModeIOCount,
+			every: 100,
+		},
+		{
+			name:      "time requires interval",
+			typ:       TypeIO,
+			mode:      ModeIOTime,
+			wantError: true,
+		},
+		{
+			name:      "count requires every",
+			typ:       TypeIO,
+			mode:      ModeIOCount,
+			wantError: true,
+		},
+		{
+			name:      "time rejects every",
+			typ:       TypeIO,
+			mode:      ModeIOTime,
+			interval:  1000,
+			every:     1,
+			wantError: true,
+		},
+		{
+			name:      "count rejects interval",
+			typ:       TypeIO,
+			mode:      ModeIOCount,
+			interval:  1,
+			every:     100,
+			wantError: true,
+		},
+		{
+			name:      "CPU rejects interval",
+			typ:       TypeCPU,
+			mode:      ModeOnCPU,
+			interval:  1,
+			wantError: true,
+		},
+		{
+			name:      "CPU rejects every",
+			typ:       TypeCPU,
+			mode:      ModeOnCPU,
+			every:     1,
+			wantError: true,
+		},
+		{
+			name:      "CPU rejects IO mode",
+			typ:       TypeCPU,
+			mode:      ModeIOCount,
+			every:     1,
+			wantError: true,
+		},
+		{
+			name:      "interval overflow",
+			typ:       TypeIO,
+			mode:      ModeIOTime,
+			interval:  uint64(math.MaxInt64/int64(time.Microsecond)) + 1,
+			wantError: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			spec := Spec{
+				Type:               test.typ,
+				Language:           LanguageGo,
+				Mode:               test.mode,
+				IOSampleIntervalUS: test.interval,
+				IOSampleEvery:      test.every,
+			}
+			if test.wantError {
+				require.Error(t, spec.Validate())
+			} else {
+				require.NoError(t, spec.Validate())
+			}
+		})
 	}
 }
 

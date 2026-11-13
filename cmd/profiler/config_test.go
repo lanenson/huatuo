@@ -103,6 +103,51 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadIOConfig(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		args     []string
+		mode     profiling.Mode
+		interval time.Duration
+		every    uint64
+	}{
+		{
+			name:     "time",
+			args:     []string{"--io-stack-mode", "time", "--io-stack-interval", "1500us"},
+			mode:     profiling.ModeIOTime,
+			interval: 1500 * time.Microsecond,
+		},
+		{
+			name:  "count",
+			args:  []string{"--io-stack-mode", "count", "--io-stack-every", "100"},
+			mode:  profiling.ModeIOCount,
+			every: 100,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			args := append([]string{
+				"--type", "io", "--language", "go", "--pid", "123",
+				"--kubelet-read-only-port", "12345", "--kubelet-authorized-port", "12346",
+				"--kubelet-client-cert-path", "/etc/kubelet/client.pem", "--docker-api-version", "1.42",
+			}, test.args...)
+			cfg, err := loadConfig(newValidationCLIContext(t, args...))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.Provider.Type != profiling.TypeIO || cfg.Provider.Mode != test.mode ||
+				cfg.Provider.IOSampleInterval != test.interval || cfg.Provider.IOSampleEvery != test.every ||
+				!cfg.Provider.ThreadGroup || cfg.Provider.PID() != 123 {
+				t.Fatalf("lost IO settings: %+v", cfg.Provider)
+			}
+			manager := cfg.Provider.PodManager
+			if manager.PodReadOnlyPort != 12345 || manager.PodAuthorizedPort != 12346 ||
+				manager.PodClientCertPath != "/etc/kubelet/client.pem" || manager.DockerAPIVersion != "1.42" {
+				t.Fatalf("lost pod manager settings: %+v", manager)
+			}
+		})
+	}
+}
+
 func TestParseSeconds(t *testing.T) {
 	const maxSeconds = int64(math.MaxInt64) / int64(time.Second)
 	for _, tc := range []struct {

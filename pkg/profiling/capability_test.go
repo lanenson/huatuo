@@ -39,21 +39,21 @@ func TestCapabilities(t *testing.T) {
 		{
 			LanguageC,
 			ImplementationNative,
-			[]Type{TypeCPU, TypeMemory},
+			[]Type{TypeCPU, TypeMemory, TypeIO},
 			[]Mode{ModeOnCPU, ModeOffCPU},
 			nativeModes,
 		},
 		{
 			LanguageCPP,
 			ImplementationNative,
-			[]Type{TypeCPU, TypeMemory},
+			[]Type{TypeCPU, TypeMemory, TypeIO},
 			[]Mode{ModeOnCPU, ModeOffCPU},
 			nativeModes,
 		},
 		{
 			LanguageGo,
 			ImplementationNative,
-			[]Type{TypeCPU, TypeMemory},
+			[]Type{TypeCPU, TypeMemory, TypeIO},
 			[]Mode{ModeOnCPU, ModeOffCPU},
 			nativeModes,
 		},
@@ -75,7 +75,7 @@ func TestCapabilities(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(string(tt.language), func(t *testing.T) {
-			for _, typ := range []Type{TypeCPU, TypeMemory, TypeLock} {
+			for _, typ := range []Type{TypeCPU, TypeMemory, TypeIO, TypeLock} {
 				supported := slices.Contains(tt.types, typ)
 				require.Equal(t, supported, IsSupported(tt.language, typ))
 
@@ -150,7 +150,8 @@ func TestCapabilitiesExposeSupportedScopeAndBinaryMatch(t *testing.T) {
 
 	for _, capability := range Capabilities() {
 		switch {
-		case capability.Type == TypeCPU && capability.implementation == ImplementationNative:
+		case (capability.Type == TypeCPU || capability.Type == TypeIO) &&
+			capability.implementation == ImplementationNative:
 			require.Equal(t, hostAndContainer, capability.SupportedScopes)
 			require.False(t, capability.SupportsBinaryMatch)
 		case capability.Type == TypeCPU:
@@ -166,7 +167,7 @@ func TestCapabilitiesExposeSupportedScopeAndBinaryMatch(t *testing.T) {
 }
 
 func TestParsers(t *testing.T) {
-	for _, typ := range []Type{TypeCPU, TypeMemory} {
+	for _, typ := range []Type{TypeCPU, TypeMemory, TypeIO} {
 		parsed, err := ParseType(string(typ))
 		require.NoError(t, err)
 		require.Equal(t, typ, parsed)
@@ -188,6 +189,8 @@ func TestParsers(t *testing.T) {
 	for _, mode := range []Mode{
 		ModeOnCPU,
 		ModeOffCPU,
+		ModeIOTime,
+		ModeIOCount,
 		ModeObjectAlloc,
 		ModeObjectUsage,
 		ModeVirtualAlloc,
@@ -205,6 +208,16 @@ func TestParsers(t *testing.T) {
 func TestParseTypeRejectsLegacyMemoryValue(t *testing.T) {
 	_, err := ParseType("mem")
 	require.EqualError(t, err, `unsupported profiling type "mem"`)
+}
+
+func TestNativeIOCapabilities(t *testing.T) {
+	for _, language := range []Language{LanguageC, LanguageCPP, LanguageGo} {
+		t.Run(string(language), func(t *testing.T) {
+			require.Equal(t, []Mode{ModeIOTime, ModeIOCount}, ModesFor(language, TypeIO))
+			require.True(t, SupportsScope(language, TypeIO, observation.ScopeHost))
+			require.True(t, SupportsScope(language, TypeIO, observation.ScopeContainer))
+		})
+	}
 }
 
 func unique[T comparable](values []T) map[T]bool {

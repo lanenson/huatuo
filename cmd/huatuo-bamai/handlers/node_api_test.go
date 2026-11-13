@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -199,6 +200,46 @@ func TestStartOperationReturnsAcceptedOnlyForNewOperation(t *testing.T) {
 	}
 	if _, ok := got.(nodeapi.StartOperation200JSONResponse); !ok {
 		t.Fatalf("idempotent StartOperation() response type = %T, want HTTP 200", got)
+	}
+}
+
+func TestStartProfilingOperationRejectsExplicitZeroIOSampling(t *testing.T) {
+	zero, interval := uint64(0), uint64(1000)
+	for _, test := range []struct {
+		name     string
+		interval *uint64
+		every    *uint64
+	}{
+		{
+			name:     "zero interval",
+			interval: &zero,
+		},
+		{
+			name:  "zero every",
+			every: &zero,
+		},
+		{
+			name:     "zero does not hide second parameter",
+			interval: &interval,
+			every:    &zero,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := &nodeapi.StartOperationJSONRequestBody{}
+			if err := body.Spec.FromProfilingOperationSpec(nodeapi.ProfilingOperationSpec{
+				Type:               nodeapi.ProfilingTypeIO,
+				Language:           nodeapi.ProfilingLanguageGo,
+				Mode:               nodeapi.ProfilingModeIOTime,
+				IOSampleIntervalUS: test.interval,
+				IOSampleEvery:      test.every,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := (&NodeAPIHandler{}).startProfilingOperation(t.Context(), body, time.Second)
+			if !errors.Is(err, nodeprofiling.ErrInvalidRequest) || !strings.Contains(err.Error(), "must be positive") {
+				t.Fatalf("startProfilingOperation() error = %v", err)
+			}
+		})
 	}
 }
 

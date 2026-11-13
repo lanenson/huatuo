@@ -15,10 +15,16 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
@@ -78,6 +84,98 @@ func TestCapabilitiesRouteIsNotCapturedAsRequestID(t *testing.T) {
 	if handler.jobCalled {
 		t.Error("GET /v1/profiling/capabilities was captured as request_id")
 	}
+}
+
+func TestFileIOResultRouteContracts(t *testing.T) {
+	document, err := openapi3.NewLoader().LoadFromData(OpenAPIJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name        string
+		path        string
+		operation   string
+		contentType string
+		body        string
+	}{
+		{
+			name:        "JSON",
+			path:        "/v1/profiling/{request_id}/io",
+			operation:   "getFileIOProfile",
+			contentType: "application/json",
+			body:        `"groups":[]`,
+		},
+		{
+			name:        "SVG",
+			path:        "/v1/profiling/{request_id}/io/flamegraph",
+			operation:   "getFileIOFlamegraph",
+			contentType: "image/svg+xml",
+			body:        `<svg xmlns="http://www.w3.org/2000/svg"/>`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := document.Paths.Value(test.path)
+			if path == nil || path.Get == nil || path.Get.OperationID != test.operation {
+				t.Fatalf("missing GET contract for %s", test.path)
+			}
+			security := path.Get.Security
+			if security == nil || len(*security) != 1 {
+				t.Fatalf("GET %s has no BearerAuth requirement", test.path)
+			}
+			if _, ok := (*security)[0]["BearerAuth"]; !ok {
+				t.Fatalf("GET %s does not use BearerAuth", test.path)
+			}
+			handler := &fileIOResultServer{}
+			router := gin.New()
+			RegisterHandlers(router, NewStrictHandler(handler, nil))
+			requestPath := strings.Replace(test.path, "{request_id}", "io-job", 1)
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, requestPath, http.NoBody))
+			if recorder.Code != http.StatusOK || handler.requestID != "io-job" ||
+				!strings.HasPrefix(recorder.Header().Get("Content-Type"), test.contentType) ||
+				!strings.Contains(recorder.Body.String(), test.body) {
+				t.Fatalf(
+					"GET %s: status=%d type=%q requestID=%q body=%s",
+					requestPath,
+					recorder.Code,
+					recorder.Header().Get("Content-Type"),
+					handler.requestID,
+					recorder.Body.String(),
+				)
+			}
+		})
+	}
+}
+
+type fileIOResultServer struct {
+	StrictServerInterface
+	requestID string
+}
+
+func (s *fileIOResultServer) GetFileIOProfile(
+	_ context.Context,
+	request GetFileIOProfileRequestObject,
+) (GetFileIOProfileResponseObject, error) {
+	s.requestID = request.RequestID
+	return GetFileIOProfile200JSONResponse(FileIOProfileResponse{
+		Data: FileIOResult{
+			Groups:          []FileIOGroup{},
+			Diagnostics:     map[string]uint64{},
+			NumericComplete: true,
+		},
+	}), nil
+}
+
+func (s *fileIOResultServer) GetFileIOFlamegraph(
+	_ context.Context,
+	request GetFileIOFlamegraphRequestObject,
+) (GetFileIOFlamegraphResponseObject, error) {
+	s.requestID = request.RequestID
+	data := []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
+	return GetFileIOFlamegraph200ImageSvgXMLResponse{
+		Body:          bytes.NewReader(data),
+		ContentLength: int64(len(data)),
+	}, nil
 }
 
 func TestServerHTTPStatusForErrorCode(t *testing.T) {
@@ -273,4 +371,55 @@ func (s *routingStrictServer) GetProfilingJob(
 ) (GetProfilingJobResponseObject, error) {
 	s.jobCalled = true
 	return GetProfilingJob200JSONResponse{}, nil
+}
+
+func TestFileIOClientPreservesIntegerCounters(t *testing.T) {
+	for _, value := range []uint64{0, 1<<53 - 1, 1 << 53, 1<<53 + 1, math.MaxInt64} {
+		t.Run(fmt.Sprint(value), func(t *testing.T) {
+			stats := fmt.Sprintf(`{"bytes":%d,"count":%d,"duration_ns":%d}`, value, value, value)
+			body := fmt.Sprintf(`{"data":{"groups":[{"scope":"host","direction":"read",`+
+				`"root":{"frame":{"name":"all"},"stats":%s,"self":%s,`+
+				`"children":[{"frame":{"name":"read"},"stats":%s,"self":%s}]},`+
+				`"unknown":%s,"outcomes":{"error":%s},"dropped_samples":{"collection":%d}}],`+
+				`"diagnostics":{"completed":%d},"numeric_complete":false}}`,
+				stats, stats, stats, stats, stats, stats, uint64(math.MaxUint64), uint64(math.MaxUint64))
+			recorder := httptest.NewRecorder()
+			recorder.Header().Set("Content-Type", "application/json")
+			_, _ = recorder.WriteString(body)
+			response := recorder.Result()
+			defer response.Body.Close()
+			parsed, err := ParseGetFileIOProfileResponse(response)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(parsed.JSON200)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decode := func(raw []byte) any {
+				t.Helper()
+				decoder := json.NewDecoder(bytes.NewReader(raw))
+				decoder.UseNumber()
+				var result any
+				if err := decoder.Decode(&result); err != nil {
+					t.Fatal(err)
+				}
+				return result
+			}
+			if !reflect.DeepEqual(decode([]byte(body)), decode(encoded)) {
+				t.Fatalf("client changed IO counters: want %s, got %s", body, encoded)
+			}
+		})
+	}
+}
+
+func TestResultReferenceContract(t *testing.T) {
+	document, err := openapi3.NewLoader().LoadFromData(OpenAPIJSON())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := document.Components.Schemas["Job"].Value.Properties["result_url"].Value
+	if result.Format != "uri-reference" {
+		t.Fatalf("result_url format = %q, want uri-reference", result.Format)
+	}
 }
