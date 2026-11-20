@@ -22,62 +22,155 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/ccfos/huatuo/internal/bpf"
+	"github.com/ccfos/huatuo/internal/iotracing/ioprofile"
 	"github.com/ccfos/huatuo/internal/log"
 	"github.com/ccfos/huatuo/internal/process"
 	"github.com/ccfos/huatuo/internal/symbol"
+	"github.com/ccfos/huatuo/internal/timeutil"
 	"github.com/ccfos/huatuo/internal/utils/bytesutil"
 	"github.com/ccfos/huatuo/pkg/types"
 )
 
-// runTrace loads the BPF object, attaches probes for cfg.durationSecond
-// seconds, then dumps and aggregates io_source_map. The duration timeout
-// and signal handler are scoped to this call so the BPF object is always
-// detached and closed before returning.
-func runTrace(ctx context.Context, bpfPath string, cfg ioConfig, filters map[string]any) (*types.IOTracingSnapshot, error) {
-	bpfBytes, err := os.ReadFile(bpfPath)
-	if err != nil {
-		return nil, fmt.Errorf("read bpf object: %w", err)
+type traceStopError struct {
+	monotonicNS uint64
+	cause       error
+}
+
+func (s traceStopError) Error() string { return s.cause.Error() }
+func (s traceStopError) Unwrap() error { return s.cause }
+
+// Record the stop before waking the perf reader, which may still be polling
+// when the BPF deadline passes.
+func traceContext(
+	parent context.Context, signals <-chan os.Signal, timeout <-chan struct{},
+) (context.Context, context.CancelCauseFunc) {
+	ctx, cancel := context.WithCancelCause(context.WithoutCancel(parent))
+	stop := func(cause error) {
+		nowNS, err := timeutil.MonotonicNowNS()
+		if err != nil {
+			cancel(err)
+			return
+		}
+		cancel(traceStopError{monotonicNS: nowNS, cause: cause})
 	}
-
-	b, err := bpf.LoadBPFFromBytes(filepath.Base(bpfPath), bpfBytes, filters)
-	if err != nil {
-		return nil, fmt.Errorf("load bpf: %w", err)
+	if parent.Err() != nil {
+		stop(context.Cause(parent))
+		return ctx, cancel
 	}
-	defer b.Close()
+	go func() {
+		cause := context.Canceled
+		select {
+		case <-parent.Done():
+			cause = context.Cause(parent)
+		case <-signals:
+		case <-timeout:
+		case <-ctx.Done():
+			return
+		}
+		stop(cause)
+	}()
 
-	captureCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	return ctx, cancel
+}
 
-	signalCtx, signalCancel := signal.NotifyContext(
-		captureCtx,
-		syscall.SIGHUP,
-		syscall.SIGQUIT,
-		syscall.SIGINT,
-		syscall.SIGTERM,
-	)
-	defer signalCancel()
+// runTrace captures one diagnostic report and attaches an IO profile when available.
+func runTrace(
+	ctx context.Context,
+	cfg ioConfig,
+	filters map[string]any,
+	options *ioProfileOptions,
+	profileErr error,
+) (*types.IOTracingSnapshot, error) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(signals)
 
-	// Earlier hooks can account IO while the remaining hooks are attaching.
-	started := time.Now()
-	reader, err := attachAndEventPipe(signalCtx, b)
-	if err != nil {
-		return nil, err
+	timeout := make(chan struct{})
+	captureCtx, cancel := traceContext(ctx, signals, timeout)
+	defer cancel(nil)
+
+	var object bpf.BPF
+	var reader bpf.PerfEventReader
+	var started, profileStarted time.Time
+	var profileDeadlineNS uint64
+	var captureWait time.Duration
+	if profileErr == nil {
+		profileErr = resolveIOProfileFilter(options)
 	}
+	if profileErr == nil {
+		constants := options.config.BPFConstants()
+		for key, value := range filters {
+			constants[key] = value
+		}
+		object, reader, started, profileErr = prepareTrace(captureCtx, options.bpfPath, constants, true)
+		if profileErr == nil {
+			profileStarted, profileDeadlineNS, profileErr = ioprofile.Arm(object, options.config.Duration)
+			if profileErr == nil {
+				var nowNS uint64
+				nowNS, profileErr = timeutil.MonotonicNowNS()
+				captureWait = time.Duration(int64(profileDeadlineNS) - int64(nowNS))
+			}
+			if profileErr != nil {
+				profileErr = errors.Join(profileErr, reader.Close(), object.Close())
+			}
+		}
+	}
+	if profileErr != nil {
+		if err := captureCtx.Err(); err != nil {
+			return nil, context.Cause(captureCtx)
+		}
+		var err error
+		object, reader, started, err = prepareTrace(captureCtx, options.bpfPath, filters, false)
+		if err != nil {
+			return nil, err
+		}
+		captureWait = time.Duration(cfg.durationSecond) * time.Second
+		profileDeadlineNS = 0
+		options = nil
+	}
+	defer object.Close()
 	defer reader.Close()
-
-	// Probe setup must not consume the requested capture window.
-	timer := time.AfterFunc(time.Duration(cfg.durationSecond)*time.Second, cancel)
+	timer := time.AfterFunc(captureWait, func() { close(timeout) })
 	defer timer.Stop()
 
-	// Loading can outlast a short workload; signal only after the reader and probes are ready.
-	fmt.Fprintln(os.Stderr, "iotracing: capture ready")
+	snapshot, err := collectTraceReport(
+		captureCtx,
+		object,
+		reader,
+		cfg,
+		options,
+		started,
+		profileStarted,
+		profileDeadlineNS,
+	)
+	if snapshot != nil && profileErr != nil {
+		snapshot.IOProfileError = profileErr.Error()
+	}
+	return snapshot, err
+}
 
-	return collectReport(b, reader, cfg, started)
+func prepareTrace(
+	ctx context.Context,
+	path string,
+	filters map[string]any,
+	withProfile bool,
+) (bpf.BPF, bpf.PerfEventReader, time.Time, error) {
+	object, err := loadIOTracingBPF(path, filters, withProfile)
+	if err != nil {
+		return nil, nil, time.Time{}, fmt.Errorf("load iotracing BPF: %w", err)
+	}
+
+	// Existing probes can account IO as soon as they are attached.
+	started := time.Now()
+	reader, err := attachAndEventPipe(ctx, object)
+	if err != nil {
+		return nil, nil, time.Time{}, errors.Join(err, object.Close())
+	}
+	return object, reader, started, nil
 }
 
 // Detach before dumping so partial output includes a stable final IO snapshot.

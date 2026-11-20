@@ -164,6 +164,15 @@ func tracerFilename(rec driver.Record) string {
 	return ""
 }
 
+// RecordFits reports whether a valid JSON record fits after local file formatting.
+func RecordFits(data []byte, rotationSizeMiB int) (bool, error) {
+	formatted, err := formatDocumentJSON(data)
+	if err != nil {
+		return false, err
+	}
+	return int64(len(formatted)) <= int64(rotationSizeMiB)*1024*1024, nil
+}
+
 func formatDocumentJSON(data []byte) ([]byte, error) {
 	var buf bytes.Buffer
 	if err := json.Indent(&buf, data, "", "\t"); err != nil {

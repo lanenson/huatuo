@@ -38,6 +38,8 @@ type WriteRequest struct {
 	KernelObservedTimestamp timeutil.Timestamp
 	TracerData              any
 	TracerRunType           string
+	// FallbackTracerData lists progressively smaller alternatives for local file storage.
+	FallbackTracerData []any
 }
 
 type documentWriter struct {
@@ -98,8 +100,8 @@ func SaveContext(ctx context.Context, request *WriteRequest) error {
 	if err != nil {
 		return err
 	}
-	return current.store.SaveContext(ctx, &tracingstore.Document{
+	return current.store.SaveWithFallback(ctx, &tracingstore.Document{
 		Document:   metadata,
 		TracerData: request.TracerData,
-	})
+	}, request.FallbackTracerData...)
 }

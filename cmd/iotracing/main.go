@@ -106,6 +106,8 @@ func mainAction(c *cli.Context) (returnErr error) {
 		}()
 	}
 
+	profileOptions, profileErr := loadIOProfileOptions(c, cfg.durationSecond)
+
 	blockDevice, err := requestPartIsBlockDevice()
 	if err != nil {
 		return err
@@ -129,7 +131,7 @@ func mainAction(c *cli.Context) (returnErr error) {
 	}
 	defer bpf.Shutdown()
 
-	result, err := runTrace(c.Context, c.String(cliFlagBpfPath), cfg, filters)
+	result, err := runTrace(c.Context, cfg, filters, &profileOptions, profileErr)
 	if client != nil {
 		return writeToolstreamReport(c.Context, client, result, err)
 	}

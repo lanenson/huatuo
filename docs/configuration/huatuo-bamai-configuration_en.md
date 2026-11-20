@@ -599,6 +599,9 @@ This tracer requires the cgroup v1 load statistics interface and is skipped on c
     # RunTracingToolTimeout = 10
     # MaxProcDump = 10
     # MaxFilesPerProcDump = 5
+    # ProfileStackMode = "io_count"
+    # ProfileStackEvery = 100
+    # ProfileStackIntervalUS = 0
 ```
 
 | Field | Description |
@@ -610,6 +613,10 @@ This tracer requires the cgroup v1 load statistics interface and is skipped on c
 | `RunTracingToolTimeout` | I/O tracing tool execution timeout in seconds. Default: `10`. |
 | `MaxProcDump` | Maximum processes shown in I/O tracing results. Default: `10`. |
 | `MaxFilesPerProcDump` | Maximum files shown per process. Default: `5`. |
+| `ProfileStackMode` | Representative-stack sampling mode: `io_count` or `io_time`. Default: `io_count`. |
+| `ProfileStackEvery` | Successful read/write operations per representative-stack refresh. Default: `100`; must be `0` in time mode. |
+| `ProfileStackIntervalUS` | Positive representative-stack refresh interval in microseconds for time mode; `0` in count mode (the default). |
+
 
 #### 7.5 Host anonymous memory spikes
 

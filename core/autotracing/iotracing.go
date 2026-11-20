@@ -32,6 +32,7 @@ import (
 
 	internalconfig "github.com/ccfos/huatuo/internal/config"
 	"github.com/ccfos/huatuo/internal/executil"
+	"github.com/ccfos/huatuo/internal/iotracing/ioprofile"
 	"github.com/ccfos/huatuo/internal/log"
 	"github.com/ccfos/huatuo/internal/procfs"
 	"github.com/ccfos/huatuo/internal/procfs/blockdevice"
@@ -65,7 +66,7 @@ func init() {
 	toolstream.RegisterDefault[types.IOTracingSnapshot](iotracingToolName, handleIotracingEvent)
 }
 
-func handleIotracingEvent(_ context.Context, request *toolstream.Request[types.IOTracingSnapshot]) error {
+func handleIotracingEvent(ctx context.Context, request *toolstream.Request[types.IOTracingSnapshot]) error {
 	if request.Data == nil {
 		return nil
 	}
@@ -81,17 +82,48 @@ func handleIotracingEvent(_ context.Context, request *toolstream.Request[types.I
 	}
 	reason := pending.reason
 
-	err := tracing.Save(&tracing.WriteRequest{
+	profileError := ev.IOProfileError
+	var profile *ioProfileReport
+	if ev.IOProfile != nil {
+		profileCtx, cancelProfile := context.WithTimeout(ctx, iotracingSnapshotTimeout)
+		var err error
+		profile, err = decodeIOProfileCapture(profileCtx, ev.IOProfile)
+		if err == nil {
+			err = profileCtx.Err()
+		}
+		cancelProfile()
+		if err != nil {
+			profile = nil
+			profileError = err.Error()
+		}
+	}
+	data := &ioStatusData{
+		Reason:         reason,
+		FailureReason:  ev.FailureReason,
+		Processes:      ev.Processes,
+		StallStacks:    ev.StallStacks,
+		IOProfile:      profile,
+		IOProfileError: profileError,
+	}
+	writeRequest := &tracing.WriteRequest{
 		TracerName:       iotracingToolName,
 		StartedTimestamp: pending.startedTimestamp,
-		TracerData: &ioStatusData{
-			Reason:        reason,
-			FailureReason: ev.FailureReason,
-			Processes:     ev.Processes,
-			StallStacks:   ev.StallStacks,
-		},
-		TracerRunType: types.TracerRunTypeAutotracing,
-	})
+		TracerData:       data,
+		TracerRunType:    types.TracerRunTypeAutotracing,
+	}
+	if profile != nil || profileError != "" {
+		diagnostic := *data
+		diagnostic.IOProfile = nil
+		diagnostic.IOProfileError = ""
+		if profile != nil {
+			withError := diagnostic
+			withError.IOProfileError = "IO profile exceeds the local file rotation size"
+			writeRequest.FallbackTracerData = append(writeRequest.FallbackTracerData, &withError)
+		}
+		writeRequest.FallbackTracerData = append(writeRequest.FallbackTracerData, &diagnostic)
+	}
+
+	err := tracing.Save(writeRequest)
 	if err != nil {
 		err = fmt.Errorf("save iotracing snapshot: %w", err)
 	}
@@ -127,6 +159,7 @@ type ioTracing struct {
 	runDurationSeconds      uint64
 	maxProcesses            int
 	maxFilesPerProcess      int
+	profileArgs             []string
 }
 
 type diskStatusSnapshot struct {
@@ -143,10 +176,12 @@ type rawDiskstatsSnapshot struct {
 //go:generate $BPF_COMPILE $BPF_INCLUDE -s $BPF_DIR/iotracing.c -o $BPF_DIR/iotracing.o
 
 type ioStatusData struct {
-	Reason        *reasonSnapshot            `json:"reason_snapshot"`
-	FailureReason string                     `json:"failure_reason,omitempty"`
-	Processes     []types.ProcessFileIOStats `json:"process_file_io_stats"`
-	StallStacks   []types.IOScheduleEvent    `json:"io_schedule_timeout_stacks"`
+	Reason         *reasonSnapshot            `json:"reason_snapshot"`
+	FailureReason  string                     `json:"failure_reason,omitempty"`
+	Processes      []types.ProcessFileIOStats `json:"process_file_io_stats"`
+	StallStacks    []types.IOScheduleEvent    `json:"io_schedule_timeout_stacks"`
+	IOProfile      *ioProfileReport           `json:"io_profile,omitempty"`
+	IOProfileError string                     `json:"io_profile_error,omitempty"`
 }
 
 type diskStatus struct {
@@ -534,12 +569,41 @@ func newIOTracer(config *Config) (*ioTracing, error) {
 		)
 	}
 
+	profileError := ""
+	sampling := ioProfileSampling{
+		mode:  ioprofile.SamplingMode(config.IOTracing.ProfileStackMode),
+		every: config.IOTracing.ProfileStackEvery,
+	}
+	if config.IOTracing.ProfileStackIntervalUS > uint64(math.MaxInt64/int64(time.Microsecond)) {
+		profileError = "IO profile sampling interval exceeds the supported duration"
+	} else {
+		sampling.interval = time.Duration(config.IOTracing.ProfileStackIntervalUS) * time.Microsecond
+	}
+	if sampling.mode == "" {
+		sampling.mode = ioprofile.ModeCount
+		if sampling.every == 0 && sampling.interval == 0 {
+			sampling.every = ioprofile.DefaultStackEvery
+		}
+	}
+	var profileArgs []string
+	if profileError == "" {
+		var err error
+		profileArgs, err = ioProfileArguments(&sampling)
+		if err != nil {
+			profileError = err.Error()
+		}
+	}
+	if profileError != "" {
+		log.WithField("reason", profileError).Warn("using default IO profile sampling")
+	}
+
 	return &ioTracing{
 		thresholds:              thresholds,
 		samplingIntervalSeconds: iotracingSamplingIntervalSeconds,
 		runDurationSeconds:      config.IOTracing.RunTracingToolTimeout,
 		maxProcesses:            config.IOTracing.MaxProcDump,
 		maxFilesPerProcess:      config.IOTracing.MaxFilesPerProcDump,
+		profileArgs:             profileArgs,
 	}, nil
 }
 
@@ -570,8 +634,8 @@ func (i *ioTracing) Start(ctx context.Context) error {
 		received:         make(chan struct{}),
 		result:           make(chan error, 1),
 	}
-	pendingReasons.Store(taskID, pending)
 
+	pendingReasons.Store(taskID, pending)
 	args := []string{
 		"--bpf-path", path.Join(internalconfig.CoreBpfDir, "iotracing.o"),
 		"--output-storage", toolstream.DefaultSockPath,
@@ -581,6 +645,7 @@ func (i *ioTracing) Start(ctx context.Context) error {
 		"--max-files-per-process", strconv.Itoa(i.maxFilesPerProcess),
 	}
 
+	args = append(args, i.profileArgs...)
 	result, runErr := executil.Run(ctx, executil.Spec{
 		Path: path.Join(internalconfig.CoreBinDir, iotracingToolName),
 		Args: args,

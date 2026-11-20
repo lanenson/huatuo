@@ -34,6 +34,15 @@ type textWriter struct{ w io.Writer }
 
 func (s *textWriter) Write(snapshot *types.IOTracingSnapshot) error {
 	printIOTracingSnapshot(s.w, snapshot)
+	if snapshot.IOProfile != nil {
+		if err := writeIOProfileSummary(s.w, snapshot.IOProfile); err != nil {
+			return err
+		}
+	}
+	if snapshot.IOProfileError != "" {
+		_, err := fmt.Fprintf(s.w, "IO profile error: %s\n", snapshot.IOProfileError)
+		return err
+	}
 	return nil
 }
 

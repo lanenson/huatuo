@@ -170,9 +170,11 @@ Tracer: `iotracing`.
 
 Reads `/proc/diskstats` every 5 seconds. A trigger condition must hold for two consecutive intervals. Non-NVMe devices check utilization; NVMe devices require both utilization and either read or write throughput to exceed thresholds. Each device also checks mean read and write wait times independently. Results include process and file I/O rates and I/O scheduling wait stacks.
 
+The same trace collects an IO profile of synchronous ext4 and XFS reads and writes by default. See [Disk I/O configuration](/docs/configuration/huatuo-bamai-configuration_en.md#74-container-io-performance) for settings.
+
 When running `iotracing` directly, `--enable-pprof` (disabled by default) serves profiles at `http://127.0.0.1:6000/debug/pprof/`; if the address is already in use, the command fails to start. These profiles describe only the `iotracing` process's Go runtime, not `huatuo-bamai` or the application processes performing disk I/O. Automatic tracing does not enable this option.
 
-Example with some common fields omitted:
+Example omitting some common fields and the IO profile:
 
 ```json
 {
@@ -242,6 +244,16 @@ Example with some common fields omitted:
 | `total_files` / `total_file_count` | A subset of file details and the untruncated total file count for the window; `*_bps` in file details uses bytes/s, and `*_us` uses microseconds |
 | `io_schedule_timeout_stacks` | I/O scheduling wait events with PID, TID, CPU, process name, and container hostname |
 | `schedule_latency_us` / `stack` | I/O scheduling wait duration (microseconds) and kernel stack frames |
+| `io_profile` | Host and container read/write statistics with an SVG flame graph. Width shows bytes successfully read or written. Color shows mean call latency. |
+| `io_profile_error` | Reason the supplemental profile is unavailable; the original diagnostic report is retained |
+
+#### Standalone iotracing
+
+Run this command on a Linux host with permission to load BPF programs. Set `BPF_DIR` to the tool's BPF object directory and open `io-profile.svg` after the capture completes.
+
+```bash
+iotracing --bpf-path "${BPF_DIR}/iotracing.o" --io-profile-svg io-profile.svg
+```
 
 ### Host Anonymous Memory
 

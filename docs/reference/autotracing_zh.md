@@ -170,9 +170,11 @@ CPU 示例使用 `perf`。使用 `profiler` 时，事件保留触发指标，pro
 
 每 5 秒读取 `/proc/diskstats`。触发条件需连续两个采样周期成立：非 NVMe 设备检查利用率；NVMe 设备要求利用率和读、写吞吐率之一同时超阈值；各设备也会独立检查读、写平均等待时间。采集结果包含进程及文件 I/O 速率、I/O 调度等待栈。
 
+同一次追踪默认采集 ext4／XFS 同步读写的 IO profile。采集开关和采样参数见[磁盘 I/O 配置](/docs/configuration/huatuo-bamai-configuration_zh.md#74-容器-io-性能)。
+
 直接运行 `iotracing` 时，可通过 `--enable-pprof`（默认关闭）在 `http://127.0.0.1:6000/debug/pprof/` 提供 profile；若地址已被占用，命令启动失败。这些 profile 仅反映 `iotracing` 进程自身的 Go runtime，不包含 `huatuo-bamai` 或执行磁盘 I/O 的业务进程。自动追踪不会开启此选项。
 
-示例（省略部分公共字段）：
+示例（省略部分公共字段和 IO profile）：
 
 ```json
 {
@@ -242,6 +244,16 @@ CPU 示例使用 `perf`。使用 `profiler` 时，事件保留触发指标，pro
 | `total_files` / `total_file_count` | 采集窗口内访问的文件明细子集及未截断的文件总数；文件明细中的 `*_bps` 为字节/秒，`*_us` 为微秒 |
 | `io_schedule_timeout_stacks` | I/O 调度等待事件，包含 PID、TID、CPU、进程名和容器主机名 |
 | `schedule_latency_us` / `stack` | I/O 调度等待时长（微秒）与内核栈帧列表 |
+| `io_profile` | 主机和容器的读写统计及 SVG 火焰图。图宽表示成功读写字节数，颜色表示平均调用延时。 |
+| `io_profile_error` | 附加 profile 不可用的原因；原诊断报告仍保留 |
+
+#### 独立运行 iotracing
+
+在具有 BPF 加载权限的 Linux 主机上运行以下命令。将 `BPF_DIR` 设为工具的 BPF 对象目录，采集结束后查看 `io-profile.svg`。
+
+```bash
+iotracing --bpf-path "${BPF_DIR}/iotracing.o" --io-profile-svg io-profile.svg
+```
 
 ### 宿主机匿名内存
 

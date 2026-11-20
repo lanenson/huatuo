@@ -22,9 +22,11 @@ const IOTracingFailureReader = "reader_error"
 // sent to huatuo-bamai over toolstream. The trigger reason snapshot is
 // attached by the daemon after receipt and is not part of this payload.
 type IOTracingSnapshot struct {
-	FailureReason string               `json:"failure_reason,omitempty"`
-	Processes     []ProcessFileIOStats `json:"process_file_io_stats"`
-	StallStacks   []IOScheduleEvent    `json:"io_schedule_timeout_stacks"`
+	FailureReason  string               `json:"failure_reason,omitempty"`
+	Processes      []ProcessFileIOStats `json:"process_file_io_stats"`
+	StallStacks    []IOScheduleEvent    `json:"io_schedule_timeout_stacks"`
+	IOProfile      *ProfilingWindow     `json:"io_profile,omitempty"`
+	IOProfileError string               `json:"io_profile_error,omitempty"`
 }
 
 // IOScheduleEvent records one task that spent longer than the configured

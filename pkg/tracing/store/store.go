@@ -22,14 +22,16 @@ import (
 	"github.com/ccfos/huatuo/internal/log"
 	"github.com/ccfos/huatuo/internal/storage"
 	"github.com/ccfos/huatuo/internal/storage/driver"
+	"github.com/ccfos/huatuo/internal/storage/localfile"
 	"github.com/ccfos/huatuo/internal/timeutil"
 	"github.com/ccfos/huatuo/internal/watch"
 )
 
 // Store fans tracing events out to configured persistence backends and watchers.
 type Store struct {
-	backends []*storage.Store[*Document]
-	hub      *watch.Hub[*Document]
+	backends             []*storage.Store[*Document]
+	hub                  *watch.Hub[*Document]
+	localRotationSizeMiB int
 }
 
 // Config contains optional persistence backend settings.
@@ -103,6 +105,7 @@ func NewFromConfig(
 		backends = append(backends, backend)
 	}
 
+	var localRotationSizeMiB int
 	if config.LocalFile != nil {
 		backendConfig := config.LocalFile
 		backend, err := storage.NewFromConfig[*Document](ctx, &driver.Config{
@@ -115,11 +118,13 @@ func NewFromConfig(
 			return nil, fmt.Errorf("new tracing document store (localfile): %w", err)
 		}
 		backends = append(backends, backend)
+		localRotationSizeMiB = backendConfig.RotationSizeMiB
 	}
 
 	return &Store{
-		backends: backends,
-		hub:      watch.NewHub[*Document](),
+		backends:             backends,
+		hub:                  watch.NewHub[*Document](),
+		localRotationSizeMiB: localRotationSizeMiB,
 	}, nil
 }
 
@@ -140,6 +145,12 @@ func (s *Store) Save(document *Document) error {
 
 // SaveContext publishes and asynchronously persists one tracing document.
 func (s *Store) SaveContext(ctx context.Context, document *Document) error {
+	return s.SaveWithFallback(ctx, document)
+}
+
+// SaveWithFallback uses alternatives only for the local file backend when the
+// complete document would exceed its rotation size.
+func (s *Store) SaveWithFallback(ctx context.Context, document *Document, fallbacks ...any) error {
 	if s == nil {
 		return errors.New("tracing store is required")
 	}
@@ -150,19 +161,48 @@ func (s *Store) SaveContext(ctx context.Context, document *Document) error {
 	if err := document.validate(); err != nil {
 		return err
 	}
+
 	s.hub.Notify(document)
 	var errs []error
 	for _, backend := range s.backends {
-		err := backend.Save(ctx, document, driver.SaveOptions{})
+		payload := document
+		if backend.Name == "localfile" && s.localRotationSizeMiB > 0 && len(fallbacks) > 0 {
+			local, err := s.fitLocalDocument(document, fallbacks)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("prepare tracing document for local file storage: %w", err))
+				continue
+			}
+			payload = local
+		}
+		err := backend.Save(ctx, payload, driver.SaveOptions{})
 		log.Debugf("save tracing document backend=%s tracer_id=%s tracer_name=%s hostname=%s "+
 			"uploaded_timestamp=%v tracer_data=%+v error=%v",
 			backend.Name, document.TracerID, document.TracerName, document.Hostname,
-			document.UploadedTimestamp, document.TracerData, err)
+			payload.UploadedTimestamp, payload.TracerData, err)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("save tracing document to %q: %w", backend.Name, err))
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func (s *Store) fitLocalDocument(document *Document, fallbacks []any) (*Document, error) {
+	payload := *document
+	for _, fallback := range fallbacks {
+		data, err := (mapper{}).Encode(&payload)
+		if err != nil {
+			return nil, err
+		}
+		fits, err := localfile.RecordFits(data, s.localRotationSizeMiB)
+		if err != nil {
+			return nil, err
+		}
+		if fits {
+			break
+		}
+		payload.TracerData = fallback
+	}
+	return &payload, nil
 }
 
 // Subscribe registers a watcher for tracing documents.

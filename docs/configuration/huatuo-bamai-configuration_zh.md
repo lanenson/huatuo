@@ -598,6 +598,9 @@ UsageThreshold/DeltaUsageThreshold（默认 90/55），与 CPUIdle 独立配置�
     # RunTracingToolTimeout = 10
     # MaxProcDump = 10
     # MaxFilesPerProcDump = 5
+    # ProfileStackMode = "io_count"
+    # ProfileStackEvery = 100
+    # ProfileStackIntervalUS = 0
 ```
 
 | 字段 | 说明 |
@@ -609,6 +612,10 @@ UsageThreshold/DeltaUsageThreshold（默认 90/55），与 CPUIdle 独立配置�
 | `RunTracingToolTimeout` | IO 追踪工具执行超时，单位秒，默认 `10`。 |
 | `MaxProcDump` | IO 追踪结果中最多显示的进程数，默认 `10`。 |
 | `MaxFilesPerProcDump` | 每个进程最多显示的文件数，默认 `5`。 |
+| `ProfileStackMode` | 代表栈采样模式，`io_count` 或 `io_time`，默认 `io_count`。 |
+| `ProfileStackEvery` | 次数模式每多少次成功读写刷新代表栈，默认 `100`；时间模式必须为 `0`。 |
+| `ProfileStackIntervalUS` | 时间模式的代表栈刷新间隔，单位微秒，必须为正；次数模式为 `0`（默认）。 |
+
 
 #### 7.5 宿主机匿名内存突增
 

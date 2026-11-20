@@ -49,7 +49,7 @@ const (
 )
 
 func appFlags() []cli.Flag {
-	return []cli.Flag{
+	return append([]cli.Flag{
 		&cli.StringFlag{
 			Name:     cliFlagBpfPath,
 			Required: true,
@@ -101,7 +101,7 @@ func appFlags() []cli.Flag {
 			Name:  cliFlagEnablePProf,
 			Usage: "serve this process's Go runtime profiles on 127.0.0.1:6000",
 		},
-	}
+	}, ioProfileFlags()...)
 }
 
 // validateFlags rejects invalid --output values and the --output / --output-storage
@@ -115,7 +115,7 @@ func validateFlags(c *cli.Context) error {
 		return errors.New("--output and --output-storage are mutually exclusive")
 	}
 
-	return nil
+	return validateIOProfileFlags(c)
 }
 
 // loadConfig reads CLI flags into ioConfig and the BPF filter map. The
