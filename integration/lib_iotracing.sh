@@ -23,6 +23,133 @@
 # host IO out of the bounded capture.
 # Path-validation rules are covered by internal/bpf TestValidateName.
 
+iotracing_profile_data=""
+iotracing_profile_uses_test_disk=false
+
+# The runner directory can be tmpfs even when the built tools reside on disk.
+prepare_iotracing_profile_data() {
+	local base filesystem
+	require_commands findmnt
+	for base in "${HUATUO_BAMAI_TEST_TMPDIR}" "${ROOT_DIR}/_output"; do
+		filesystem=$(findmnt -n -o FSTYPE --target "${base}")
+		case ${filesystem} in
+		ext4 | xfs)
+			iotracing_profile_data=$(mktemp -d "${base}/iotracing-data.XXXXXX")
+			log_info "IO profile workload filesystem: ${filesystem} (${iotracing_profile_data})"
+			return
+			;;
+		esac
+	done
+	source "${ROOT_DIR}/integration/lib_io.sh"
+	iotracing_profile_uses_test_disk=true
+	io_test_prepare_storage ext4
+	iotracing_profile_data=$(mktemp -d "${io_test_storage_dir}/iotracing-data.XXXXXX")
+}
+
+cleanup_iotracing_profile_data() {
+	local status=0
+	if [[ -n ${iotracing_profile_data:-} ]]; then
+		rm -rf -- "${iotracing_profile_data}" || status=1
+	fi
+	if [[ ${iotracing_profile_uses_test_disk} == true ]]; then
+		io_test_cleanup_disks || status=1
+	fi
+	return "${status}"
+}
+
+stop_iotracing_profile_fixture() {
+	local pid=$1 status=0
+	stop_and_wait_by_pid "${pid}" 5 || status=$?
+	if ((status != 0 && status != 143)); then
+		log_error "IO fixture PID ${pid} stopped with status ${status}"
+		return 1
+	fi
+}
+
+prepare_iotracing_profile_trigger() {
+	local root=$1 major minor device rest
+	while read -r major minor device rest; do
+		case ${device} in loop* | ram* | zram* | fd* | md*) continue ;; esac
+		[[ -e /sys/dev/block/${major}:${minor} && ! -e /sys/dev/block/${major}:${minor}/partition ]] || continue
+		io_trigger_device=("${major}" "${minor}" "${device}")
+		break
+	done < /proc/diskstats
+	(("${#io_trigger_device[@]}")) || skip "no whole block device for the diskstats trigger fixture"
+
+	mkdir -p "${root}/proc" "${root}/sys"
+	ln -s /sys/dev "${root}/sys/dev"
+	printf '%s %s %s 0 0 0 0 0 0 0 0 0 0 0\n' "${io_trigger_device[@]}" > "${root}/proc/diskstats"
+}
+
+start_iotracing_profile_trigger() {
+	local root=$1
+	python3 "${ROOT_DIR}/integration/testdata/test_iotracing_diskstats.py" "${root}/proc/diskstats" \
+		"${io_trigger_device[@]}" &
+	io_trigger_writer=$!
+}
+
+# Each expected pair is a scope (host or container ID) and the writer's host PID.
+assert_iotracing_profile_svg() {
+	local event=$1
+	shift
+	[[ -s ${event} ]] || return 1
+	jq -ser 'last | select(.tracer_name == "iotracing" and .tracer_type == "autotracing"
+		and (.tracer_data | has("process_file_io_stats") and has("io_schedule_timeout_stacks"))
+		and .tracer_data.reason_snapshot.device != null
+		and .tracer_data.io_profile_error == null
+		and .tracer_data.io_profile.duration_ns == 2000000000
+		and (.tracer_data.io_profile.groups | length > 0)) | .tracer_data.io_profile.flamegraph_svg
+	' "${event}" | python3 -c '
+import sys
+import xml.etree.ElementTree as ET
+
+host_panel = "WRITE / host"
+expected = {}
+for scope, pid in zip(sys.argv[1::2], sys.argv[2::2]):
+    panel = host_panel if scope == "host" else "WRITE / container / " + scope
+    expected[panel] = "pid=\"{}\"".format(pid)
+container_writers = {pid for panel, pid in expected.items() if panel != host_panel}
+found = set()
+namespace = "{http://www.w3.org/2000/svg}"
+panel = None
+target_y = None
+try:
+    svg = ET.parse(sys.stdin).getroot()
+except ET.ParseError:
+    sys.exit(1)
+for element in svg:
+    if element.tag == namespace + "text":
+        text = element.text or ""
+        if text.startswith(("READ / ", "WRITE / ")):
+            panel = text
+            target_y = None
+    if panel not in expected or element.tag != namespace + "g":
+        continue
+    rectangle = element.find(namespace + "rect")
+    if rectangle is None:
+        continue
+    frame = element.findtext(namespace + "title", "").split("; ", 1)[0]
+    labels = set(frame.split())
+    own_write = expected[panel] in labels and float(rectangle.attrib["width"]) > 0
+    if panel != host_panel:
+        if labels & (container_writers - {expected[panel]}):
+            sys.exit(1)
+        if own_write:
+            found.add(panel)
+        continue
+
+    # Rectangles are drawn in tree order, with descendants above their parent.
+    y = int(rectangle.attrib["y"])
+    if target_y is not None and y >= target_y:
+        target_y = None
+    if own_write:
+        target_y = y
+    elif target_y is not None and frame and frame != "[unknown user stack]" and not frame.endswith(" [kernel]"):
+        found.add(panel)
+sys.exit(found != set(expected))
+' "$@"
+}
+
 iotracing_filesystem_test() {
 	source "${ROOT_DIR}/integration/lib.sh"
 	source "${ROOT_DIR}/integration/lib_io.sh"

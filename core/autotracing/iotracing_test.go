@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,6 +28,7 @@ import (
 	"time"
 
 	"github.com/ccfos/huatuo/internal/document"
+	"github.com/ccfos/huatuo/internal/iotracing/ioprofile"
 	"github.com/ccfos/huatuo/internal/procfs"
 	"github.com/ccfos/huatuo/internal/procfs/blockdevice"
 	"github.com/ccfos/huatuo/internal/storage/driver"
@@ -39,6 +41,7 @@ import (
 	"github.com/ccfos/huatuo/pkg/types"
 
 	promblockdevice "github.com/prometheus/procfs/blockdevice"
+	"github.com/rs/xid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -75,11 +78,20 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 	exitErr := errors.New("child failed")
 	saveErr := errors.New("save failed")
 	for _, test := range []struct {
-		name    string
-		exitErr error
-		saveErr error
+		name        string
+		exitErr     error
+		saveErr     error
+		profileMode string
 	}{
 		{name: "success"},
+		{
+			name:        "supplement attached",
+			profileMode: "valid",
+		},
+		{
+			name:        "invalid supplement preserves original",
+			profileMode: "invalid",
+		},
 		{name: "failed child keeps partial report", exitErr: exitErr},
 		{name: "save failure", saveErr: saveErr},
 		{name: "child and save failure", exitErr: exitErr, saveErr: saveErr},
@@ -124,9 +136,44 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 				received:         make(chan struct{}),
 				result:           make(chan error, 1),
 			}
+			var supplement *types.ProfilingWindow
+			if test.profileMode != "" {
+				window := &types.ProfilingWindow{ProfileType: "invalid"}
+				if test.profileMode == "valid" {
+					builder := ioprofile.NewBuilder(1, 1000000000)
+					if err := builder.Add([]types.ProfileFrame{{Name: "writer"}}, []types.ProfileLabel{
+						types.ProfileStringLabel("direction", "write"),
+						types.ProfileStringLabel("attribution", "other"),
+						types.ProfileStringLabel("cgroup_css", "17"),
+						types.ProfileStringLabel("cgroup_id", "42"),
+						types.ProfileStringLabel("result", "success"),
+					}, ioprofile.Stats{
+						Bytes:      4096,
+						Count:      1,
+						DurationNS: 1000,
+					}); err != nil {
+						t.Fatal(err)
+					}
+					profile, err := builder.Profile(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					window = &types.ProfilingWindow{
+						ProfileType: ioprofile.ProfileType,
+						Profile:     profile,
+					}
+				}
+				supplement = window
+			}
 			pendingReasons.Store(taskID, pending)
 			report := &types.IOTracingSnapshot{
-				Processes: []types.ProcessFileIOStats{{PID: 42, Comm: "writer", TotalDiskWriteBps: 4096}},
+				IOProfile: supplement,
+				Processes: []types.ProcessFileIOStats{{
+					PID:               42,
+					Comm:              "writer",
+					ContainerHostname: "original-process-host",
+					TotalDiskWriteBps: 4096,
+				}},
 				StallStacks: []types.IOScheduleEvent{{
 					PID: 42, TID: 43, CPU: 2, Comm: "writer", ScheduleLatencyUS: 2500,
 					ContainerHostname: "container", Stack: []string{"io_schedule"},
@@ -191,6 +238,20 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 				Reason: pending.reason, FailureReason: report.FailureReason,
 				Processes: report.Processes, StallStacks: report.StallStacks,
 			}
+			if test.profileMode == "invalid" {
+				wantData.IOProfileError = "IO event requires one complete capture"
+			}
+			if test.profileMode == "valid" {
+				attached := document.TracerData.IOProfile
+				if attached == nil || attached.DurationNS != 1000000000 || len(attached.Groups) != 2 || attached.Groups[0].Stats.Bytes != 4096 || !strings.Contains(attached.FlamegraphSVG, "WRITE / host") {
+					t.Fatalf("IO supplement was not attached: %+v", attached)
+				}
+				if attached.Groups[1].Scope != ioprofile.ScopeOther || attached.Groups[1].Stats.Bytes != 4096 ||
+					strings.Contains(attached.FlamegraphSVG, "cgroup_css") {
+					t.Fatalf("IO supplement did not publish unresolved IO safely: %+v", attached.Groups[1])
+				}
+				wantData.IOProfile = attached
+			}
 			if !reflect.DeepEqual(document.TracerData, wantData) {
 				t.Fatalf("saved snapshot = %+v, want %+v", document.TracerData, wantData)
 			}
@@ -225,6 +286,137 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 				}
 			case <-time.After(time.Second):
 				t.Fatal("snapshot wait did not finish after save returned")
+			}
+		})
+	}
+}
+
+func TestHandleIOTracingEventPreservesDiagnosticWhenProfileExceedsRotationSize(t *testing.T) {
+	for _, test := range []struct {
+		name               string
+		fillsRotationLimit bool
+		wantProfileError   string
+	}{
+		{
+			name:             "error field fits",
+			wantProfileError: "IO profile exceeds the local file rotation size",
+		},
+		{
+			name:               "original diagnostic fills the file",
+			fillsRotationLimit: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := t.TempDir()
+			store, err := tracingstore.NewFromConfig(t.Context(), tracingstore.Config{
+				LocalFile: &tracingstore.LocalFileConfig{
+					Path:            path,
+					RotationSizeMiB: 1,
+					MaxRotatedFiles: 1,
+				},
+			})
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, store.Close(context.Background())) })
+			documents := document.New("test-region")
+			require.NoError(t, tracing.EnableDocumentWriter(store, documents))
+			t.Cleanup(tracing.DisableDocumentWriter)
+
+			builder := ioprofile.NewBuilder(1, int64(time.Second))
+			require.NoError(t, builder.Add([]types.ProfileFrame{
+				{Name: strings.Repeat("<", 256<<10)},
+			}, []types.ProfileLabel{
+				types.ProfileStringLabel("direction", "write"),
+				types.ProfileStringLabel("attribution", "other"),
+				types.ProfileStringLabel("cgroup_css", "0"),
+				types.ProfileStringLabel("cgroup_id", "0"),
+				types.ProfileStringLabel("result", "success"),
+			}, ioprofile.Stats{
+				Bytes:      4096,
+				Count:      1,
+				DurationNS: 1000,
+			}))
+			profile, err := builder.Profile(t.Context())
+			require.NoError(t, err)
+
+			pending := &pendingIOTracingReason{
+				reason: &reasonSnapshot{
+					Type:   string(ioReasonUtil),
+					Device: "sda",
+				},
+				startedTimestamp: timeutil.Now(),
+				received:         make(chan struct{}),
+				result:           make(chan error, 1),
+			}
+			pendingReasons.Store(t.Name(), pending)
+			t.Cleanup(func() { pendingReasons.Delete(t.Name()) })
+
+			event := &types.IOTracingSnapshot{
+				Processes: []types.ProcessFileIOStats{{PID: 42, Comm: "writer"}},
+				StallStacks: []types.IOScheduleEvent{{
+					PID:   42,
+					Stack: []string{"io_schedule"},
+				}},
+				IOProfile: &types.ProfilingWindow{
+					ProfileType: ioprofile.ProfileType,
+					Profile:     profile,
+				},
+			}
+			if test.fillsRotationLimit {
+				files := make([]types.FileIOStats, 1024)
+				for i := range files {
+					files[i].Inode = uint64(i + 1)
+				}
+				event.Processes[0].TotalFiles = files
+				event.Processes[0].TotalFileCount = uint64(len(files))
+
+				metadata, err := documents.Build(&document.Input{
+					TracerName:       iotracingToolName,
+					TracerID:         xid.New().String(),
+					StartedTimestamp: pending.startedTimestamp,
+					TracerRunType:    types.TracerRunTypeAutotracing,
+				})
+				require.NoError(t, err)
+				metadata.UploadedTimestamp = timeutil.Now()
+				legacy := &tracingstore.Document{
+					Document: metadata,
+					TracerData: &ioStatusData{
+						Reason:      pending.reason,
+						Processes:   event.Processes,
+						StallStacks: event.StallStacks,
+					},
+				}
+				encoded, err := json.MarshalIndent(legacy, "", "\t")
+				require.NoError(t, err)
+				remaining := (1 << 20) - len(encoded)
+				require.Positive(t, remaining)
+				for i := range files {
+					size := remaining / len(files)
+					if i == len(files)-1 {
+						size += remaining % len(files)
+					}
+					files[i].Path = strings.Repeat("x", size)
+				}
+			}
+
+			require.NoError(t, handleIotracingEvent(t.Context(), &toolstream.Request[types.IOTracingSnapshot]{
+				TaskID: t.Name(),
+				Data:   event,
+			}))
+			require.NoError(t, <-pending.result)
+
+			record, err := os.ReadFile(filepath.Join(path, iotracingToolName))
+			require.NoError(t, err)
+			var saved struct {
+				TracerData ioStatusData `json:"tracer_data"`
+			}
+			require.NoError(t, json.Unmarshal(record, &saved))
+			assert.Equal(t, pending.reason, saved.TracerData.Reason)
+			assert.Equal(t, event.Processes, saved.TracerData.Processes)
+			assert.Equal(t, event.StallStacks, saved.TracerData.StallStacks)
+			assert.Nil(t, saved.TracerData.IOProfile)
+			assert.Equal(t, test.wantProfileError, saved.TracerData.IOProfileError)
+			if test.fillsRotationLimit {
+				assert.Len(t, record, 1<<20)
 			}
 		})
 	}
@@ -298,9 +490,72 @@ func TestNewIOTracer(t *testing.T) {
 		name          string
 		updateConfig  func(*Config)
 		expectedError string
+		usesDefault   bool
 	}{
 		{
 			name: "valid config",
+		},
+		{
+			name: "time sampling",
+			updateConfig: func(config *Config) {
+				config.IOTracing.ProfileStackMode = "io_time"
+				config.IOTracing.ProfileStackEvery = 0
+				config.IOTracing.ProfileStackIntervalUS = 1000
+			},
+		},
+		{
+			name: "count sampling",
+			updateConfig: func(config *Config) {
+				config.IOTracing.ProfileStackMode = "io_count"
+				config.IOTracing.ProfileStackEvery = 250
+			},
+		},
+		{
+			name: "time sampling requires interval",
+			updateConfig: func(config *Config) {
+				config.IOTracing.ProfileStackMode = "io_time"
+			},
+			usesDefault: true,
+		},
+		{
+			name: "count sampling requires operations",
+			updateConfig: func(config *Config) {
+				config.IOTracing.ProfileStackMode = "io_count"
+			},
+			usesDefault: true,
+		},
+		{
+			name: "time sampling rejects operation count",
+			updateConfig: func(config *Config) {
+				config.IOTracing.ProfileStackMode = "io_time"
+				config.IOTracing.ProfileStackIntervalUS = 1000
+				config.IOTracing.ProfileStackEvery = 1
+			},
+			usesDefault: true,
+		},
+		{
+			name: "count sampling rejects interval",
+			updateConfig: func(config *Config) {
+				config.IOTracing.ProfileStackMode = "io_count"
+				config.IOTracing.ProfileStackIntervalUS = 1
+				config.IOTracing.ProfileStackEvery = 100
+			},
+			usesDefault: true,
+		},
+		{
+			name: "sampling interval overflow",
+			updateConfig: func(config *Config) {
+				config.IOTracing.ProfileStackMode = "io_time"
+				config.IOTracing.ProfileStackIntervalUS = uint64(math.MaxInt64/int64(time.Microsecond)) + 1
+			},
+			usesDefault: true,
+		},
+		{
+			name: "unknown IO sampling mode",
+			updateConfig: func(config *Config) {
+				config.IOTracing.ProfileStackMode = "offcpu"
+			},
+			usesDefault: true,
 		},
 		{
 			name: "zero read throughput threshold",
@@ -368,6 +623,10 @@ func TestNewIOTracer(t *testing.T) {
 				if tracer == nil {
 					t.Fatal("newIOTracer() returned nil tracer")
 				}
+				if test.usesDefault && len(tracer.profileArgs) != 0 {
+					t.Fatalf("invalid sampling should fall back to CLI defaults, got %q", tracer.profileArgs)
+				}
+
 				return
 			}
 			if err == nil {
@@ -392,6 +651,9 @@ func TestNewIOTracerBindsConfig(t *testing.T) {
 	config.IOTracing.RunTracingToolTimeout = 999
 	config.IOTracing.MaxProcDump = 999
 	config.IOTracing.MaxFilesPerProcDump = 999
+	config.IOTracing.ProfileStackMode = "io_time"
+	config.IOTracing.ProfileStackEvery = 999
+	config.IOTracing.ProfileStackIntervalUS = 999
 
 	if tracer.thresholds.RBPSThreshold != 1 {
 		t.Errorf("read bps threshold = %d, want 1", tracer.thresholds.RBPSThreshold)
@@ -404,6 +666,9 @@ func TestNewIOTracerBindsConfig(t *testing.T) {
 	}
 	if tracer.maxFilesPerProcess != 5 {
 		t.Errorf("max files per process = %d, want 5", tracer.maxFilesPerProcess)
+	}
+	if len(tracer.profileArgs) != 0 {
+		t.Errorf("default sampling unexpectedly overrides CLI options: %q", tracer.profileArgs)
 	}
 }
 

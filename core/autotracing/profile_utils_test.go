@@ -19,6 +19,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +28,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	internalconfig "github.com/ccfos/huatuo/internal/config"
+	"github.com/ccfos/huatuo/internal/iotracing/ioprofile"
 	"github.com/ccfos/huatuo/internal/profiling/flamegraph"
 	"github.com/ccfos/huatuo/internal/toolstream"
 )
@@ -277,5 +279,40 @@ func TestProfileToolConfiguration(t *testing.T) {
 	}
 	if cfg.CPUIdle.Tool != cpuToolPerf || cfg.CPUSys.Tool != cpuToolPerf {
 		t.Fatalf("default tools: cpuidle=%q cpusys=%q", cfg.CPUIdle.Tool, cfg.CPUSys.Tool)
+	}
+}
+
+func TestIOProfileArgumentsPreserveSamplingMode(t *testing.T) {
+	for _, mode := range []ioprofile.SamplingMode{ioprofile.ModeCount, ioprofile.ModeTime} {
+		t.Run(string(mode), func(t *testing.T) {
+			sampling := ioProfileSampling{
+				mode:  mode,
+				every: 250,
+			}
+			expected, forbidden, value := "--io-stack-every", "--io-stack-interval", "250"
+			if mode == ioprofile.ModeTime {
+				sampling.every = 0
+				sampling.interval = 1500 * time.Microsecond
+				expected, forbidden, value = "--io-stack-interval", "--io-stack-every", "1500us"
+			}
+			args, err := ioProfileArguments(&sampling)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(args) == 0 || args[0] != "--io-stack-mode" {
+				t.Fatalf("sampling arguments missing: %q", args)
+			}
+			for _, pair := range [][2]string{{"--io-stack-mode", string(mode)}, {expected, value}} {
+				index := slices.Index(args, pair[0])
+				if index < 0 || index+1 >= len(args) || args[index+1] != pair[1] {
+					t.Fatalf("missing %q in %q", pair, args)
+				}
+			}
+			for _, flag := range []string{"--aggr-interval", "--duration", "--task-id", forbidden} {
+				if slices.Contains(args, flag) {
+					t.Fatalf("profile overrides original capture parameters: %q", args)
+				}
+			}
+		})
 	}
 }

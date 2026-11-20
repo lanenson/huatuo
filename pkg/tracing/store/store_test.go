@@ -17,6 +17,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -145,6 +146,69 @@ func TestStoreSavesAndPublishesTracingDocument(t *testing.T) {
 	case got := <-documents:
 		if got != document {
 			t.Fatalf("subscriber document = %p, want %p", got, document)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("subscriber did not receive tracing document")
+	}
+}
+
+func TestStoreLocalFallbackPreservesOtherBackendsAndSubscribers(t *testing.T) {
+	local := &testBackend{}
+	remote := &testBackend{}
+	newStore := func(name string, backend *testBackend) *storage.Store[*Document] {
+		t.Helper()
+		persistence, err := storage.NewStore[*Document](t.Context(), name, backend, Collection, mapper{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return persistence
+	}
+	store := &Store{
+		backends: []*storage.Store[*Document]{
+			newStore("localfile", local),
+			newStore("elasticsearch", remote),
+		},
+		hub:                  watch.NewHub[*Document](),
+		localRotationSizeMiB: 1,
+	}
+	documents, cancel := store.Subscribe()
+	defer cancel()
+
+	full := strings.Repeat("a", 1<<20)
+	document := &Document{
+		Document: types.Document{
+			Hostname:          "node-1",
+			TracerID:          "trace-1",
+			TracerRunType:     types.TracerRunTypeEvent,
+			ObservedTimestamp: &timeutil.Timestamp{Time: time.Now()},
+		},
+		TracerData: full,
+	}
+	if err := store.SaveWithFallback(t.Context(), document, "legacy-only"); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		backend *testBackend
+		want    string
+	}{
+		{backend: local, want: "legacy-only"},
+		{backend: remote, want: full},
+	} {
+		if len(test.backend.saved) != 1 {
+			t.Fatalf("backend saved %d records, want 1", len(test.backend.saved))
+		}
+		saved, err := (mapper{}).Decode(test.backend.saved[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		if saved.TracerData != test.want {
+			t.Fatal("backend received the wrong tracing payload")
+		}
+	}
+	select {
+	case published := <-documents:
+		if published.TracerData != full || document.TracerData != full {
+			t.Fatal("local fallback changed the shared event")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("subscriber did not receive tracing document")

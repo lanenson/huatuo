@@ -16,8 +16,18 @@ package flamegraph
 
 import (
 	"bytes"
+	"encoding/xml"
+	"errors"
+	"io"
+	"math"
+	"strconv"
 	"strings"
 	"testing"
+
+	profilev1 "github.com/grafana/pyroscope/api/gen/proto/go/google/v1"
+
+	"github.com/ccfos/huatuo/internal/iotracing/ioprofile"
+	"github.com/ccfos/huatuo/pkg/types"
 )
 
 func TestRenderKeepsSymbolsOutOfJavaScript(t *testing.T) {
@@ -42,5 +52,349 @@ func TestRenderKeepsSymbolsOutOfJavaScript(t *testing.T) {
 	if !strings.Contains(content, `data-title="`) ||
 		!strings.Contains(content, "&lt;script&gt;alert(2)&lt;/script&gt;") {
 		t.Fatalf("SVG does not preserve the escaped symbol as data: %s", content)
+	}
+}
+
+func ioProfileLabels(container string) []types.ProfileLabel {
+	attribution := ioprofile.ScopeOther
+	labels := []types.ProfileLabel{types.ProfileStringLabel("direction", "read"), types.ProfileStringLabel("result", "success"), types.ProfilePIDLabel(10)}
+	if container != "" {
+		attribution = ioprofile.ScopeContainer
+		labels = append(labels, types.ProfileStringLabel("container_id", container), types.ProfileStringLabel("container_hostname", "worker"), types.ProfileStringLabel("container_type", "normal"), types.ProfileStringLabel("container_qos", "burstable"))
+	}
+	return append(labels, types.ProfileStringLabel("attribution", attribution))
+}
+
+func ioProfileCapture(t *testing.T) *profilev1.Profile {
+	t.Helper()
+	builder := ioprofile.NewBuilder(1, 10000000000)
+	for _, container := range []string{"container-a", ""} {
+		if err := builder.Add([]types.ProfileFrame{{Name: "main"}, {Name: "read_file"}}, ioProfileLabels(container), ioprofile.Stats{
+			Bytes:      4096,
+			Count:      1,
+			DurationNS: 1000000,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture, err := builder.Profile(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return capture
+}
+
+func TestIOProfileSingleCaptureKeepsValuesTogether(t *testing.T) {
+	capture := ioProfileCapture(t)
+	result, err := ioprofile.Decode(capture, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.SampleType) != 3 || len(result.Groups) != 3 || result.Groups[0].Scope != ioprofile.ScopeHost || result.Groups[0].Root.Stats != (ioprofile.Stats{
+		Bytes:      8192,
+		Count:      2,
+		DurationNS: 2000000,
+	}) {
+		t.Fatalf("joint capture lost values: %+v", result)
+	}
+	for _, index := range []int{0, 1} {
+		found := false
+		for _, node := range result.Groups[index].Root.Children {
+			var hostname, containerType, qos string
+			for _, label := range node.Labels {
+				switch label.Name {
+				case "container_hostname":
+					hostname = label.StringValue
+				case "container_type":
+					containerType = label.StringValue
+				case "container_qos":
+					qos = label.StringValue
+				}
+			}
+			found = found || (hostname == "worker" && containerType == "normal" && qos == "burstable")
+		}
+		if !found {
+			t.Fatalf("scope %s lost container profile labels", result.Groups[index].Scope)
+		}
+	}
+	var svg bytes.Buffer
+	if err := RenderIOProfile(t.Context(), &svg, result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(svg.String(), "container_hostname=&#34;worker&#34;") ||
+		!strings.Contains(svg.String(), "container_qos=&#34;burstable&#34;") ||
+		!strings.Contains(svg.String(), "Container: worker / container-a / type: normal / QoS: burstable") {
+		t.Fatal("SVG lost container profile labels")
+	}
+	if !result.NumericComplete {
+		t.Fatal("complete capture reported numeric loss")
+	}
+}
+
+func TestIOProfileRejectsInvalidCapture(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*profilev1.Profile)
+	}{
+		{
+			name:   "missing value type",
+			mutate: func(p *profilev1.Profile) { p.SampleType = p.SampleType[:2] },
+		},
+		{
+			name:   "missing row value",
+			mutate: func(p *profilev1.Profile) { p.Sample[0].Value = p.Sample[0].Value[:2] },
+		},
+		{
+			name:   "negative count",
+			mutate: func(p *profilev1.Profile) { p.Sample[0].Value[1] = -1 },
+		},
+		{
+			name:   "missing location",
+			mutate: func(p *profilev1.Profile) { p.Sample[0].LocationId = []uint64{9999} },
+		},
+		{
+			name:   "negative duration",
+			mutate: func(p *profilev1.Profile) { p.DurationNanos = -1 },
+		},
+		{
+			name:   "duplicate value type",
+			mutate: func(p *profilev1.Profile) { p.SampleType[1] = p.SampleType[0] },
+		},
+		{
+			name:   "missing string",
+			mutate: func(p *profilev1.Profile) { p.Sample[0].Label[0].Key = 9999 },
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := ioProfileCapture(t)
+			test.mutate(p)
+			if _, err := ioprofile.Decode(p, nil); err == nil {
+				t.Fatal("invalid capture accepted")
+			}
+		})
+	}
+}
+
+func TestIOProfileUnknownErrorsAndLoss(t *testing.T) {
+	builder := ioprofile.NewBuilder(1, 1000000000)
+	if err := builder.Add(nil, ioProfileLabels(""), ioprofile.Stats{
+		Bytes:      4096,
+		Count:      1,
+		DurationNS: 1000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	labels := ioProfileLabels("container-errors")
+	for i := range labels {
+		if labels[i].Name == "result" {
+			labels[i].StringValue = "error"
+		}
+	}
+	if err := builder.Add(nil, labels, ioprofile.Stats{
+		Count:      2,
+		DurationNS: 5000,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for i := range labels {
+		if labels[i].Name == "result" {
+			labels[i].StringValue = "eof"
+		}
+	}
+	if err := builder.Add(nil, labels, ioprofile.Stats{Count: 1}); err != nil {
+		t.Fatal(err)
+	}
+	capture, err := builder.Profile(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ioprofile.Decode(capture, map[string]uint64{types.DropReasonCollection: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NumericComplete || result.Groups[0].Unknown.Bytes != 4096 || result.Groups[0].Outcomes["error"].Count != 2 || result.Groups[0].Root.Stats.Count != 1 {
+		t.Fatalf("error/unknown/loss semantics changed: %+v", result)
+	}
+	container := &result.Groups[1]
+	if container.ContainerID != "container-errors" || len(container.Root.Children) != 0 ||
+		len(container.Root.Labels) == 0 || container.Outcomes["eof"].Count != 1 {
+		t.Fatalf("zero-byte container lost metadata or outcomes: %+v", container)
+	}
+
+	var svg bytes.Buffer
+	if err := RenderIOProfile(t.Context(), &svg, result); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(svg.String(), "INCOMPLETE") || !strings.Contains(svg.String(), "error: 2 operations") ||
+		!strings.Contains(svg.String(), "Container: worker") || !strings.Contains(svg.String(), "type: normal / QoS: burstable") {
+		t.Fatal("loss or outcome not visible")
+	}
+}
+
+func TestIOProfileCaptureRejectsOverflow(t *testing.T) {
+	builder := ioprofile.NewBuilder(1, 1000000000)
+	for i := 0; i < 2; i++ {
+		if err := builder.Add(nil, ioProfileLabels(""), ioprofile.Stats{
+			Bytes:      math.MaxInt64,
+			Count:      1,
+			DurationNS: 1,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	capture, err := builder.Profile(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ioprofile.Decode(capture, nil); err == nil {
+		t.Fatal("overflowed capture accepted")
+	}
+}
+
+func TestIOProfileSVGEncodesBytesSelfAndMeanLatency(t *testing.T) {
+	builder := ioprofile.NewBuilder(1, 1000000000)
+	for _, sample := range []struct {
+		name  string
+		stats ioprofile.Stats
+	}{
+		{
+			name: "parent",
+			stats: ioprofile.Stats{
+				Bytes:      20,
+				Count:      1,
+				DurationNS: 2000000,
+			},
+		},
+		{
+			name: "fast",
+			stats: ioprofile.Stats{
+				Bytes:      40,
+				Count:      4,
+				DurationNS: 40000,
+			},
+		},
+		{
+			name: "middle",
+			stats: ioprofile.Stats{
+				Bytes:      20,
+				Count:      2,
+				DurationNS: 2000000,
+			},
+		},
+		{
+			name: "slow",
+			stats: ioprofile.Stats{
+				Bytes:      20,
+				Count:      1,
+				DurationNS: 100000000,
+			},
+		},
+	} {
+		frames := []types.ProfileFrame{{Name: "parent"}}
+		if sample.name != "parent" {
+			frames = append(frames, types.ProfileFrame{Name: sample.name})
+		}
+		if err := builder.Add(frames, ioProfileLabels(""), sample.stats); err != nil {
+			t.Fatal(err)
+		}
+	}
+	profile, err := builder.Profile(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := ioprofile.Decode(profile, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var image bytes.Buffer
+	if err := RenderIOProfile(t.Context(), &image, result); err != nil {
+		t.Fatal(err)
+	}
+	type rectangle struct {
+		X     string `xml:"x,attr"`
+		Width string `xml:"width,attr"`
+		Fill  string `xml:"fill,attr"`
+	}
+	type frame struct {
+		Title string    `xml:"title"`
+		Rect  rectangle `xml:"rect"`
+	}
+	frames := make(map[string]frame)
+	decoder := xml.NewDecoder(&image)
+	for {
+		token, err := decoder.Token()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		start, ok := token.(xml.StartElement)
+		if !ok || start.Name.Local != "g" {
+			continue
+		}
+		var current frame
+		if err := decoder.DecodeElement(&current, &start); err != nil {
+			t.Fatal(err)
+		}
+		name := strings.SplitN(current.Title, ";", 2)[0]
+		if _, exists := frames[name]; !exists {
+			frames[name] = current
+		}
+	}
+	number := func(t *testing.T, value string) float64 {
+		t.Helper()
+		result, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	parent := frames["parent"]
+	width := number(t, parent.Rect.Width)
+	if width <= 0 {
+		t.Fatal("parent has no byte width")
+	}
+	childWidth := 0.0
+	parentX := number(t, parent.Rect.X)
+	for _, test := range []struct {
+		name  string
+		ratio float64
+		left  float64
+		color string
+	}{
+		{
+			name:  "fast",
+			ratio: 0.4,
+			color: "rgb(65,171,93)",
+		},
+		{
+			name:  "middle",
+			ratio: 0.2,
+			left:  0.4,
+			color: "rgb(254,224,139)",
+		},
+		{
+			name:  "slow",
+			ratio: 0.2,
+			left:  0.6,
+			color: "rgb(215,48,39)",
+		},
+	} {
+		current := frames[test.name]
+		actualWidth := number(t, current.Rect.Width)
+		childWidth += actualWidth
+		t.Run(test.name, func(t *testing.T) {
+			nextX := parentX + width*test.left
+			if math.Abs(actualWidth-width*test.ratio) > 0.002 || math.Abs(number(t, current.Rect.X)-nextX) > 0.002 {
+				t.Fatalf("frame width/position = %+v, want ratio %g at x=%g", current.Rect, test.ratio, nextX)
+			}
+			if current.Rect.Fill != test.color {
+				t.Fatalf("mean-latency color = %q, want %q", current.Rect.Fill, test.color)
+			}
+		})
+	}
+	if math.Abs(width-childWidth-width*0.2) > 0.002 {
+		t.Fatal("parent self bytes did not leave 20 percent blank space")
 	}
 }
