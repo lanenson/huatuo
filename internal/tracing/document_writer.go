@@ -38,6 +38,9 @@ type WriteRequest struct {
 	KernelObservedTimestamp timeutil.Timestamp
 	TracerData              any
 	TracerRunType           string
+	// FitLocalFile lets a caller trim optional data before publishing. The
+	// supplied check uses the complete document and current local file limit.
+	FitLocalFile func(fits func() bool)
 }
 
 type documentWriter struct {
@@ -98,8 +101,13 @@ func SaveContext(ctx context.Context, request *WriteRequest) error {
 	if err != nil {
 		return err
 	}
-	return current.store.SaveContext(ctx, &tracingstore.Document{
+	event := &tracingstore.Document{
 		Document:   metadata,
 		TracerData: request.TracerData,
-	})
+	}
+	if request.FitLocalFile != nil {
+		request.FitLocalFile(func() bool { return current.store.FitsLocalFile(event) })
+	}
+
+	return current.store.SaveContext(ctx, event)
 }

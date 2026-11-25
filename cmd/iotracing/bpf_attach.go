@@ -20,10 +20,64 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/cilium/ebpf"
+
 	"github.com/ccfos/huatuo/internal/bpf"
+	"github.com/ccfos/huatuo/internal/bpf/abi"
 )
+
+// loadIOTracingBPF selects the entry points before verification and map creation.
+func loadIOTracingBPF(path string, filters map[string]any, withProfile bool) (bpf.BPF, error) {
+	spec, err := ebpf.LoadCollectionSpec(path)
+	if err != nil {
+		return nil, err
+	}
+	if spec.Programs["io_profile_return"] == nil {
+		if withProfile {
+			return nil, errors.New("BPF object does not provide IO profiling")
+		}
+		return bpf.LoadBPFFromCollectionSpec(filepath.Base(path), spec, filters)
+	}
+
+	if withProfile {
+		overflow := spec.Maps["io_overflow"]
+		buckets := uint32(abi.IotracingProfileDirectionMax) * uint32(abi.IotracingProfileResultMax)
+		if overflow == nil || overflow.MaxEntries != buckets {
+			return nil, errors.New("incompatible IO overflow map; use the BPF object built with this iotracing binary")
+		}
+	}
+
+	for _, direction := range []string{"read", "write"} {
+		diagnostic := "bpf_anyfs_diagnostic_" + direction + "_iter"
+		if !withProfile {
+			program := spec.Programs[diagnostic]
+			if program == nil {
+				return nil, fmt.Errorf("missing diagnostic BPF program %q", diagnostic)
+			}
+			entry := "bpf_anyfs_file_" + direction + "_iter"
+			program.Name = entry
+			spec.Programs[entry] = program
+		}
+		delete(spec.Programs, diagnostic)
+	}
+
+	if !withProfile {
+		// An unsupported profile map must not prevent a diagnostics-only load.
+		delete(spec.Programs, "io_profile_return")
+		delete(spec.Programs, "io_profile_exit")
+		for _, name := range []string{
+			"io_profile_control", "stack_map_a", "io_inflight", "io_success_counts",
+			"io_representatives", "io_refresh_claims", "io_counts", "io_overflow", "io_dropped",
+		} {
+			delete(spec.Maps, name)
+		}
+	}
+
+	return bpf.LoadBPFFromCollectionSpec(filepath.Base(path), spec, filters)
+}
 
 // attachAndEventPipe attaches all programs found in the BPF object and
 // returns a perf reader for iodelay events. The reader is closed if any
@@ -77,8 +131,13 @@ func buildAttachOptions(programs []bpf.ProgramInfo) ([]bpf.AttachOption, error) 
 	}
 
 	var options []bpf.AttachOption
+	hasIOProfileReturn := false
 
 	for _, p := range programs {
+		if p.Name == "io_profile_return" {
+			hasIOProfileReturn = true
+			continue
+		}
 		if isAnyfsProgram(p.Name) {
 			continue
 		}
@@ -109,7 +168,24 @@ func buildAttachOptions(programs []bpf.ProgramInfo) ([]bpf.AttachOption, error) 
 		}
 	}
 
-	options = append(options, anyfsAttachOptions()...)
+	filesystemOptions := anyfsAttachOptions()
+	if hasIOProfileReturn {
+		if len(filesystemOptions) == 0 {
+			return nil, errors.New("IO profile requires ext4 or xfs")
+		}
+		returns := make([]bpf.AttachOption, 0, len(filesystemOptions))
+		for _, probe := range filesystemOptions {
+			switch probe.ProgramName {
+			case "bpf_anyfs_file_read_iter", "bpf_anyfs_file_write_iter":
+				returns = append(returns, bpf.AttachOption{
+					ProgramName: "io_profile_return",
+					Symbol:      probe.Symbol,
+				})
+			}
+		}
+		options = append(returns, options...)
+	}
+	options = append(options, filesystemOptions...)
 
 	return options, nil
 }

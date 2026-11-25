@@ -5,7 +5,7 @@
 #include <bpf/bpf_tracing.h>
 
 #include "bpf_common.h"
-#include "abi/iotracing_types.h"
+#include "io_profile.h"
 
 char __license[] SEC("license") = "Dual MIT/GPL";
 
@@ -406,11 +406,26 @@ static __always_inline int bpf_file_read_write(struct pt_regs *ctx, bool is_writ
 SEC("kprobe/anyfs_file_read_iter")
 int bpf_anyfs_file_read_iter(struct pt_regs *ctx)
 {
+	io_profile_enter(ctx, IOTRACING_PROFILE_READ);
 	return bpf_file_read_write(ctx, false);
 }
 
 SEC("kprobe/anyfs_file_write_iter")
 int bpf_anyfs_file_write_iter(struct pt_regs *ctx)
+{
+	io_profile_enter(ctx, IOTRACING_PROFILE_WRITE);
+	return bpf_file_read_write(ctx, true);
+}
+
+/* Keep diagnostic entry points loadable if the profile probes or maps fail. */
+SEC("kprobe/anyfs_diagnostic_read_iter")
+int bpf_anyfs_diagnostic_read_iter(struct pt_regs *ctx)
+{
+	return bpf_file_read_write(ctx, false);
+}
+
+SEC("kprobe/anyfs_diagnostic_write_iter")
+int bpf_anyfs_diagnostic_write_iter(struct pt_regs *ctx)
 {
 	return bpf_file_read_write(ctx, true);
 }

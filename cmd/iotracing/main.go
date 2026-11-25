@@ -106,6 +106,13 @@ func mainAction(c *cli.Context) (returnErr error) {
 		}()
 	}
 
+	var profileOptions *ioProfileOptions
+	var profileErr error
+	if c.String(cliFlagOutputStorage) != "" || c.String(cliFlagOutput) == outputJSON || c.String(cliFlagIOProfileSVG) != "" {
+		options, err := loadIOProfileOptions(c, cfg.durationSecond)
+		profileOptions, profileErr = &options, err
+	}
+
 	blockDevice, err := requestPartIsBlockDevice()
 	if err != nil {
 		return err
@@ -129,11 +136,14 @@ func mainAction(c *cli.Context) (returnErr error) {
 	}
 	defer bpf.Shutdown()
 
-	result, err := runTrace(c.Context, c.String(cliFlagBpfPath), cfg, filters)
+	result, err := runTrace(c.Context, c.String(cliFlagBpfPath), cfg, filters, profileOptions, profileErr)
 	if client != nil {
 		return writeToolstreamReport(c.Context, client, result, err)
 	}
 
+	if result != nil && result.IOProfileError != "" {
+		fmt.Fprintf(os.Stderr, "%s: IO profile error: %s\n", iotracingToolName, result.IOProfileError)
+	}
 	return writeReport(newWriter(c.Context, c.String(cliFlagOutput), nil), result, err)
 }
 

@@ -65,7 +65,7 @@ func init() {
 	toolstream.RegisterDefault[types.IOTracingSnapshot](iotracingToolName, handleIotracingEvent)
 }
 
-func handleIotracingEvent(_ context.Context, request *toolstream.Request[types.IOTracingSnapshot]) error {
+func handleIotracingEvent(ctx context.Context, request *toolstream.Request[types.IOTracingSnapshot]) error {
 	if request.Data == nil {
 		return nil
 	}
@@ -81,17 +81,42 @@ func handleIotracingEvent(_ context.Context, request *toolstream.Request[types.I
 	}
 	reason := pending.reason
 
+	profileError := ev.IOProfileError
+	var profile *ioProfileReport
+	if ev.IOProfile != nil {
+		profileCtx, cancelProfile := context.WithTimeout(ctx, iotracingSnapshotTimeout)
+		var err error
+		profile, err = decodeIOProfileCapture(profileCtx, ev.IOProfile)
+		if err == nil {
+			err = profileCtx.Err()
+		}
+		cancelProfile()
+		if err != nil {
+			profile = nil
+			profileError = err.Error()
+		}
+	}
+	data := &ioStatusData{
+		Reason:         reason,
+		FailureReason:  ev.FailureReason,
+		Processes:      ev.Processes,
+		StallStacks:    ev.StallStacks,
+		IOProfile:      profile,
+		IOProfileError: profileError,
+	}
 	err := tracing.Save(&tracing.WriteRequest{
 		TracerName:       iotracingToolName,
 		StartedTimestamp: pending.startedTimestamp,
-		TracerData: &ioStatusData{
-			Reason:        reason,
-			FailureReason: ev.FailureReason,
-			Processes:     ev.Processes,
-			StallStacks:   ev.StallStacks,
+		TracerData:       data,
+		TracerRunType:    types.TracerRunTypeAutotracing,
+		FitLocalFile: func(fits func() bool) {
+			profileError = data.trimIOProfile(fits)
 		},
-		TracerRunType: types.TracerRunTypeAutotracing,
 	})
+	if profileError != "" {
+		log.WithField("task_id", request.TaskID).WithField("reason", profileError).
+			Error("iotracing IO profile is incomplete")
+	}
 	if err != nil {
 		err = fmt.Errorf("save iotracing snapshot: %w", err)
 	}
@@ -143,10 +168,12 @@ type rawDiskstatsSnapshot struct {
 //go:generate $BPF_COMPILE $BPF_INCLUDE -s $BPF_DIR/iotracing.c -o $BPF_DIR/iotracing.o
 
 type ioStatusData struct {
-	Reason        *reasonSnapshot            `json:"reason_snapshot"`
-	FailureReason string                     `json:"failure_reason,omitempty"`
-	Processes     []types.ProcessFileIOStats `json:"process_file_io_stats"`
-	StallStacks   []types.IOScheduleEvent    `json:"io_schedule_timeout_stacks"`
+	Reason         *reasonSnapshot            `json:"reason_snapshot"`
+	FailureReason  string                     `json:"failure_reason,omitempty"`
+	Processes      []types.ProcessFileIOStats `json:"process_file_io_stats"`
+	StallStacks    []types.IOScheduleEvent    `json:"io_schedule_timeout_stacks"`
+	IOProfile      *ioProfileReport           `json:"io_profile,omitempty"`
+	IOProfileError string                     `json:"io_profile_error,omitempty"`
 }
 
 type diskStatus struct {
@@ -570,8 +597,8 @@ func (i *ioTracing) Start(ctx context.Context) error {
 		received:         make(chan struct{}),
 		result:           make(chan error, 1),
 	}
-	pendingReasons.Store(taskID, pending)
 
+	pendingReasons.Store(taskID, pending)
 	args := []string{
 		"--bpf-path", path.Join(internalconfig.CoreBpfDir, "iotracing.o"),
 		"--output-storage", toolstream.DefaultSockPath,

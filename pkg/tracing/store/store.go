@@ -16,6 +16,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -28,8 +29,9 @@ import (
 
 // Store fans tracing events out to configured persistence backends and watchers.
 type Store struct {
-	backends []*storage.Store[*Document]
-	hub      *watch.Hub[*Document]
+	backends         []*storage.Store[*Document]
+	hub              *watch.Hub[*Document]
+	localFileSizeMiB int
 }
 
 // Config contains optional persistence backend settings.
@@ -103,8 +105,10 @@ func NewFromConfig(
 		backends = append(backends, backend)
 	}
 
+	var localFileSizeMiB int
 	if config.LocalFile != nil {
 		backendConfig := config.LocalFile
+		localFileSizeMiB = backendConfig.RotationSizeMiB
 		backend, err := storage.NewFromConfig[*Document](ctx, &driver.Config{
 			Driver:                "localfile",
 			LocalFilePath:         backendConfig.Path,
@@ -118,8 +122,9 @@ func NewFromConfig(
 	}
 
 	return &Store{
-		backends: backends,
-		hub:      watch.NewHub[*Document](),
+		backends:         backends,
+		hub:              watch.NewHub[*Document](),
+		localFileSizeMiB: localFileSizeMiB,
 	}, nil
 }
 
@@ -131,6 +136,18 @@ func closeBackends(ctx context.Context, backends []*storage.Store[*Document]) er
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// FitsLocalFile reports whether a complete document fits the configured local
+// file's single-record limit. UploadedTimestamp has fixed-width JSON.
+func (s *Store) FitsLocalFile(document *Document) bool {
+	if s.localFileSizeMiB == 0 {
+		return true
+	}
+
+	// Match mapper.Encode followed by the local file backend's JSON indentation.
+	encoded, err := json.MarshalIndent(document, "", "\t")
+	return err == nil && int64(len(encoded)) <= int64(s.localFileSizeMiB)*(1<<20)
 }
 
 // Save publishes and asynchronously persists one tracing document.
