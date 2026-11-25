@@ -676,3 +676,16 @@ EOF
 		write_config_bamai_elasticsearch "${STORAGE_ADDR}" "${STORAGE_USERNAME}" "${STORAGE_PASSWORD}" "${DLOAD_INDEX}"
 	fi
 }
+
+# Synthetic diskstats drives the existing detector; local storage owns the event.
+write_config_bamai_iotracing_profile() {
+	write_config_blacklist_except iotracing
+	write_config_bamai_http
+	write_config_bamai_auth "integration-node-token"
+	write_config_storage_local "${HUATUO_BAMAI_TEST_TMPDIR}/events"
+	cat << EOF_CONFIG
+
+[AutoTracing.IOTracing]
+    RunTracingToolTimeout = 1
+EOF_CONFIG
+}

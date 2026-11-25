@@ -15,6 +15,7 @@
 package autotracing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,8 @@ import (
 	"time"
 
 	"github.com/ccfos/huatuo/internal/document"
+	"github.com/ccfos/huatuo/internal/iotracing/ioprofile"
+	"github.com/ccfos/huatuo/internal/log"
 	"github.com/ccfos/huatuo/internal/procfs"
 	"github.com/ccfos/huatuo/internal/procfs/blockdevice"
 	"github.com/ccfos/huatuo/internal/storage/driver"
@@ -75,17 +78,31 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 	exitErr := errors.New("child failed")
 	saveErr := errors.New("save failed")
 	for _, test := range []struct {
-		name    string
-		exitErr error
-		saveErr error
+		name        string
+		exitErr     error
+		saveErr     error
+		profileMode string
 	}{
 		{name: "success"},
+		{
+			name:        "supplement attached",
+			profileMode: "valid",
+		},
+		{
+			name:        "invalid supplement preserves original",
+			profileMode: "invalid",
+		},
 		{name: "failed child keeps partial report", exitErr: exitErr},
 		{name: "save failure", saveErr: saveErr},
 		{name: "child and save failure", exitErr: exitErr, saveErr: saveErr},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			taskID := t.Name()
+			var profileLogs bytes.Buffer
+			if test.profileMode == "invalid" {
+				log.SetOutput(&profileLogs)
+				t.Cleanup(func() { log.SetOutput(os.Stdout) })
+			}
 			backend := &blockingIOTracingBackend{
 				started: make(chan driver.Record, 1),
 				release: make(chan struct{}),
@@ -124,9 +141,44 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 				received:         make(chan struct{}),
 				result:           make(chan error, 1),
 			}
+			var supplement *types.ProfilingWindow
+			if test.profileMode != "" {
+				window := &types.ProfilingWindow{ProfileType: "invalid"}
+				if test.profileMode == "valid" {
+					builder := ioprofile.NewBuilder(1, 1000000000)
+					if err := builder.Add([]types.ProfileFrame{{Name: "writer"}}, []types.ProfileLabel{
+						types.ProfileStringLabel("direction", "write"),
+						types.ProfileStringLabel("attribution", "other"),
+						types.ProfileStringLabel("cgroup_css", "17"),
+						types.ProfileStringLabel("cgroup_id", "42"),
+						types.ProfileStringLabel("result", "success"),
+					}, ioprofile.Stats{
+						Bytes:      4096,
+						Count:      1,
+						DurationNS: 1000,
+					}); err != nil {
+						t.Fatal(err)
+					}
+					profile, err := builder.Profile(t.Context())
+					if err != nil {
+						t.Fatal(err)
+					}
+					window = &types.ProfilingWindow{
+						ProfileType: ioprofile.ProfileType,
+						Profile:     profile,
+					}
+				}
+				supplement = window
+			}
 			pendingReasons.Store(taskID, pending)
 			report := &types.IOTracingSnapshot{
-				Processes: []types.ProcessFileIOStats{{PID: 42, Comm: "writer", TotalDiskWriteBps: 4096}},
+				IOProfile: supplement,
+				Processes: []types.ProcessFileIOStats{{
+					PID:               42,
+					Comm:              "writer",
+					ContainerHostname: "original-process-host",
+					TotalDiskWriteBps: 4096,
+				}},
 				StallStacks: []types.IOScheduleEvent{{
 					PID: 42, TID: 43, CPU: 2, Comm: "writer", ScheduleLatencyUS: 2500,
 					ContainerHostname: "container", Stack: []string{"io_schedule"},
@@ -191,6 +243,20 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 				Reason: pending.reason, FailureReason: report.FailureReason,
 				Processes: report.Processes, StallStacks: report.StallStacks,
 			}
+			if test.profileMode == "invalid" {
+				wantData.IOProfileError = "IO event requires one complete capture"
+			}
+			if test.profileMode == "valid" {
+				attached := document.TracerData.IOProfile
+				if attached == nil || attached.DurationNS != 1000000000 || len(attached.Groups) != 2 || attached.Groups[0].Stats.Bytes != 4096 || !strings.Contains(attached.FlamegraphSVG, "WRITE / host") {
+					t.Fatalf("IO supplement was not attached: %+v", attached)
+				}
+				if attached.Groups[1].Scope != ioprofile.ScopeOther || attached.Groups[1].Stats.Bytes != 4096 ||
+					strings.Contains(attached.FlamegraphSVG, "cgroup_css") {
+					t.Fatalf("IO supplement did not publish unresolved IO safely: %+v", attached.Groups[1])
+				}
+				wantData.IOProfile = attached
+			}
 			if !reflect.DeepEqual(document.TracerData, wantData) {
 				t.Fatalf("saved snapshot = %+v, want %+v", document.TracerData, wantData)
 			}
@@ -216,6 +282,12 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("handler did not finish after save returned")
 			}
+			if test.profileMode == "invalid" {
+				reported := profileLogs.String()
+				assert.Equal(t, 1, strings.Count(reported, "iotracing IO profile is incomplete"))
+				assert.Contains(t, reported, taskID)
+				assert.Contains(t, reported, wantData.IOProfileError)
+			}
 			select {
 			case err := <-waitDone:
 				if (test.exitErr == nil && test.saveErr == nil && err != nil) ||
@@ -226,6 +298,168 @@ func TestHandleIOTracingEventCompletesAfterSave(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("snapshot wait did not finish after save returned")
 			}
+		})
+	}
+}
+
+func TestIOTracingLocalFileBudgetPreservesDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	store, err := tracingstore.NewFromConfig(t.Context(), tracingstore.Config{
+		LocalFile: &tracingstore.LocalFileConfig{
+			Path:            dir,
+			RotationSizeMiB: 1,
+			MaxRotatedFiles: 1,
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		tracing.DisableDocumentWriter()
+		assert.NoError(t, store.Close(context.Background()))
+	})
+	require.NoError(t, tracing.EnableDocumentWriter(store, document.New("test-region")))
+
+	labels := []types.ProfileLabel{
+		types.ProfileStringLabel("direction", "write"),
+		types.ProfileStringLabel("attribution", "other"),
+		types.ProfileStringLabel("cgroup_css", "0"),
+		types.ProfileStringLabel("cgroup_id", "0"),
+		types.ProfileStringLabel("result", "success"),
+	}
+	builder := ioprofile.NewBuilder(1, int64(time.Second))
+	const count = 768
+	for i := range count {
+		frame := types.ProfileFrame{Name: fmt.Sprintf("writer_%03d_%s", i, strings.Repeat("payload", 120))}
+		err := builder.Add(
+			[]types.ProfileFrame{frame},
+			labels,
+			ioprofile.Stats{Bytes: 4096, Count: 1, DurationNS: 1000},
+		)
+		require.NoError(t, err)
+	}
+	profile, err := builder.Profile(t.Context())
+	require.NoError(t, err)
+
+	pending := &pendingIOTracingReason{
+		reason:           &reasonSnapshot{Type: string(ioReasonUtil), Device: "sda"},
+		startedTimestamp: timeutil.Now(),
+		received:         make(chan struct{}),
+		result:           make(chan error, 1),
+	}
+	taskID := t.Name()
+	pendingReasons.Store(taskID, pending)
+	t.Cleanup(func() { pendingReasons.Delete(taskID) })
+	report := &types.IOTracingSnapshot{
+		Processes: []types.ProcessFileIOStats{{PID: 42, Comm: "writer"}},
+		StallStacks: []types.IOScheduleEvent{{
+			PID: 42, Stack: []string{"io_schedule"},
+		}},
+		IOProfile: &types.ProfilingWindow{ProfileType: ioprofile.ProfileType, Profile: profile},
+	}
+	request := &toolstream.Request[types.IOTracingSnapshot]{TaskID: taskID, Data: report}
+	require.NoError(t, handleIotracingEvent(t.Context(), request))
+
+	raw, err := os.ReadFile(filepath.Join(dir, iotracingToolName))
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(raw), 1<<20)
+	var event struct {
+		TracerData ioStatusData `json:"tracer_data"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &event))
+	assert.Equal(t, report.Processes, event.TracerData.Processes)
+	assert.Equal(t, report.StallStacks, event.TracerData.StallStacks)
+	assert.Equal(t, "IO profile exceeds the event size budget", event.TracerData.IOProfileError)
+	require.NotNil(t, event.TracerData.IOProfile)
+	assert.Empty(t, event.TracerData.IOProfile.FlamegraphSVG)
+	require.Len(t, event.TracerData.IOProfile.Groups, 2)
+	assert.EqualValues(t, count*4096, event.TracerData.IOProfile.Groups[0].Stats.Bytes)
+}
+
+func TestIOTracingEventProfileSizeBudget(t *testing.T) {
+	t.Parallel()
+
+	diagnostic := ioStatusData{
+		Reason:    &reasonSnapshot{Type: string(ioReasonUtil), Device: "sda"},
+		Processes: []types.ProcessFileIOStats{{PID: 42, Comm: "writer"}},
+		StallStacks: []types.IOScheduleEvent{{
+			PID:   42,
+			Stack: []string{"io_schedule"},
+		}},
+	}
+	report := ioProfileReport{
+		DurationNS: int64(time.Second),
+		Groups: []ioProfileSummary{{
+			Scope:     ioprofile.ScopeHost,
+			Direction: ioprofile.DirectionWrite,
+			Stats:     ioprofile.Stats{Bytes: 4096, Count: 1, DurationNS: 1000},
+		}},
+		FlamegraphSVG: strings.Repeat("<g> & </g>\n", 12),
+	}
+	full := diagnostic
+	full.IOProfile = &report
+	summary := diagnostic
+	statsOnly := report
+	statsOnly.FlamegraphSVG = ""
+	summary.IOProfile = &statsOnly
+	summary.IOProfileError = "IO profile exceeds the event size budget"
+
+	size := func(data *ioStatusData) int {
+		t.Helper()
+		record, err := json.MarshalIndent(data, "\t", "\t")
+		require.NoError(t, err)
+		return len(record)
+	}
+	for _, test := range []struct {
+		name       string
+		input      ioStatusData
+		output     ioStatusData
+		wantReason string
+	}{
+		{name: "complete report fits", input: full, output: full},
+		{
+			name:       "encoded SVG exceeds budget",
+			input:      full,
+			output:     summary,
+			wantReason: summary.IOProfileError,
+		},
+		{
+			name:  "only original diagnostic and budget reason fit",
+			input: full,
+			output: ioStatusData{
+				Reason:         diagnostic.Reason,
+				Processes:      diagnostic.Processes,
+				StallStacks:    diagnostic.StallStacks,
+				IOProfileError: summary.IOProfileError,
+			},
+			wantReason: summary.IOProfileError,
+		},
+		{
+			name:       "only original diagnostic fits",
+			input:      full,
+			output:     diagnostic,
+			wantReason: summary.IOProfileError,
+		},
+		{
+			name: "profile error exceeds budget",
+			input: ioStatusData{
+				Reason:         diagnostic.Reason,
+				Processes:      diagnostic.Processes,
+				StallStacks:    diagnostic.StallStacks,
+				IOProfileError: strings.Repeat("profile error ", 80),
+			},
+			output:     diagnostic,
+			wantReason: strings.Repeat("profile error ", 80),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := test.input
+			if input.IOProfile != nil {
+				profile := *input.IOProfile
+				input.IOProfile = &profile
+			}
+			limit := size(&test.output)
+			reason := input.trimIOProfile(func() bool { return size(&input) <= limit })
+			assert.Equal(t, test.wantReason, reason)
+			assert.Equal(t, test.output, input)
 		})
 	}
 }
@@ -368,6 +602,7 @@ func TestNewIOTracer(t *testing.T) {
 				if tracer == nil {
 					t.Fatal("newIOTracer() returned nil tracer")
 				}
+
 				return
 			}
 			if err == nil {

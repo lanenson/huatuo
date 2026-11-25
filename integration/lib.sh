@@ -745,6 +745,64 @@ integration_huatuo_apiserver_start() {
 	huatuo_apiserver_start "${runtime_args[@]}"
 }
 
+test_docker_owner_label() {
+	printf 'huatuo.integration.owner=%s\n' "$1"
+}
+
+remove_test_docker_container() {
+	local workspace=$1 id=$2 remaining
+	if [[ ! ${id} =~ ^[0-9a-f]{64}$ ]]; then
+		log_error "invalid test Docker container ID: ${id}"
+		return 1
+	fi
+	if timeout --foreground --kill-after=2 15 docker rm -fv "${id}" >> "${workspace}/docker-cleanup.log" 2>&1; then
+		return 0
+	fi
+	if remaining=$(timeout --foreground --kill-after=2 10 docker ps -a --filter "id=${id}" --quiet) && [[ -z ${remaining} ]]; then
+		return 0
+	fi
+	log_error "cannot remove owned Docker container ${id}; see ${workspace}/docker-cleanup.log"
+	return 1
+}
+
+# The marker is empty when all create requests returned an ID. Otherwise it
+# holds the one unconfirmed name, which can appear after the first list call.
+cleanup_test_docker_containers() {
+	local workspace=$1 marker label pending deadline remaining rows id name status=0
+	marker="${workspace}/docker-cleanup.pending"
+	[[ -f ${marker} ]] || return 0
+	pending=$(< "${marker}")
+	label=$(test_docker_owner_label "${workspace}")
+	deadline=$((SECONDS + 10))
+
+	while :; do
+		remaining=$((deadline - SECONDS))
+		((remaining > 0)) || break
+		if ! rows=$(timeout --kill-after=2 "${remaining}" docker ps -a --no-trunc \
+			--format '{{.ID}} {{.Names}}' --filter "label=${label}" 2>> "${workspace}/docker-cleanup.log"); then
+			log_error "cannot list owned Docker containers; see ${workspace}/docker-cleanup.log"
+			return 1
+		fi
+		while IFS=' ' read -r id name; do
+			[[ -n ${id} ]] || continue
+			if [[ ${name} == "${pending}" ]]; then
+				pending=""
+				: > "${marker}" || return 1
+			fi
+			remove_test_docker_container "${workspace}" "${id}" || status=1
+		done <<< "${rows}"
+		((status == 0)) || return 1
+		if [[ -z ${pending} ]]; then
+			rm -f "${marker}" || return 1
+			return 0
+		fi
+		sleep 0.2
+	done
+
+	log_error "Docker create result for ${pending} is still unknown; retained ${marker}"
+	return 1
+}
+
 # Cleanup runs inside the case namespace; diagnostics are printed by the runner
 # after stdout/stderr have closed, avoiding recursive reads of the live logs.
 integration_test_cleanup() {

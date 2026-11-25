@@ -244,6 +244,11 @@ runner_finalize_execution() {
 		&& { [[ $result_valid == true ]] || { [[ ! -e $workspace/execution.log ]] && [[ $worker_exit_code == 130 || $worker_exit_code == 137 || $worker_exit_code == 143 ]]; }; }; then
 		result=skipped reason="execution interrupted: ${runner_cancelled[slot]}"
 	fi
+	# This runs in the runner even if the case group was forcibly killed.
+	if ! cleanup_test_docker_containers "$workspace"; then
+		cleanup_status=1
+		cleanup_reason="${cleanup_reason:+${cleanup_reason}; }failed to remove test Docker containers; see docker-cleanup.log"
+	fi
 	find "$workspace" -type f -name timings.log -exec cat {} + || true
 	if ((cleanup_status)); then
 		result=failed
